@@ -15,7 +15,7 @@ lr = 1e-4
 
 # Other hyper param
 epochs = 30
-seed = None
+seed = 42
 num_workers = 8
 beta = 0.25
 gradient_clip = 1

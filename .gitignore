@@ -1,5 +1,67 @@
+# ------------------------------
+# Python 常用忽略规则
+# ------------------------------
+
+# 编译生成的字节码/缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+.venv/
+venv/
+ENV/
+env/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# 临时文件
+*.log
+*.tmp
+*.swp
+*.bak
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE 相关
+.vscode/
+.idea/
+
+# ------------------------------
+# 项目相关忽略规则
+# ------------------------------
+
+# 忽略常见数据/模型文件（可按需保留）
+*.pt
+*.pth
+*.h5
+*.ckpt
+*.onnx
+*.npz
+*.npy
+
+# 忽略压缩包/大文件
+*.zip
+*.tar
+*.tar.gz
+*.rar
+
+# 忽略图片/结果可选
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.gif
+
 RobustSemanComm-main/
 rq-vae-transformer-main/
 semantic-communication-w-codebook-main/
 Semantic-Digital-Analog-Converter-main/
 OpenSource/
+datasets/
+
+# 忽略所有以 output 开头的文件夹（包含内容）
+/output*/

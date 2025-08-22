@@ -1,7 +1,7 @@
+import torch
 import torch.nn as nn
 from subnets import *
 from adapter import Adapter
-import config as cf
 from bsc_channel import BSC_channel
 
 
@@ -13,10 +13,8 @@ class network(nn.Module):
         n_res_layers = config.n_res_layers  # 2
 
         self.encoder = Encoder(3, hidden_channel, n_res_layers, res_hidden_channel)
-        
-        self.adapter = Adapter(cf)
+        self.adapter = Adapter(config)
         self.channel = BSC_channel(stochastic=False, bit_flip_prob=3.9e-6)
-
         self.decoder = Decoder(hidden_channel, hidden_channel, n_res_layers, res_hidden_channel)
 
     def forward(self, x):
@@ -44,5 +42,5 @@ class network(nn.Module):
             x_hat=x_hat,
             ber=ber,
             z_e=z_e,
-            recon_out=recon_out
+            recon_out=recon_out,
         )

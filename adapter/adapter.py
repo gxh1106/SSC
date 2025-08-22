@@ -32,11 +32,22 @@ class Adapter(nn.Module):
         super().__init__(*args, **kwargs)
         self.use_adapter = config.use_adapter
         self.quant_num_bits = config.quant_num_bits
-        self.mapper = nn.Parameter(mapper_generator(self.quant_num_bits), requires_grad=False)
-        self.code_book = nn.Embedding(2 ** self.quant_num_bits, self.quant_num_bits, device="cuda")
+        # keep mapper on same device as module via buffer
+        self.register_buffer("mapper", mapper_generator(self.quant_num_bits))
+        self.code_book = nn.Embedding(2 ** self.quant_num_bits, self.quant_num_bits)
         self.code_book.weight.data.uniform_(-1.0 / 2 ** self.quant_num_bits, 1.0 / 2 ** self.quant_num_bits)
-        self.pre_quant = nn.Conv2d(config.hidden_channel, self.quant_num_bits * config.hidden_channel, kernel_size=1, groups=config.hidden_channel)
-        self.after_quant = nn.Conv2d(self.quant_num_bits * config.hidden_channel, config.hidden_channel, kernel_size=1, groups=config.hidden_channel)
+        self.pre_quant = nn.Conv2d(
+            config.hidden_channel,
+            self.quant_num_bits * config.hidden_channel,
+            kernel_size=1,
+            groups=config.hidden_channel,
+        )
+        self.after_quant = nn.Conv2d(
+            self.quant_num_bits * config.hidden_channel,
+            config.hidden_channel,
+            kernel_size=1,
+            groups=config.hidden_channel,
+        )
 
     def forward(self, x):
         # the input of this network should be a 4-D tensor with shape like (batch_size, channel, height, width)
@@ -49,7 +60,9 @@ class Adapter(nn.Module):
         euclid_distance = torch.sum(x_flatten ** 2, dim=1, keepdim=True) + torch.sum(self.code_book.weight ** 2, dim=1) - 2 * torch.matmul(x_flatten, self.code_book.weight.t())
 
         min_index = torch.argmin(euclid_distance, dim=1).unsqueeze(1)
-        temp = torch.zeros(min_index.shape[0], 2 ** self.quant_num_bits).cuda().scatter(1, min_index, 1)  # create a one-hot matrix to select corresponding code
+        temp = torch.zeros(
+            min_index.shape[0], 2 ** self.quant_num_bits, device=x_flatten.device
+        ).scatter(1, min_index, 1)  # create a one-hot matrix to select corresponding code
 
         out = torch.matmul(temp, self.code_book.weight)
         out = torch.reshape(out, x.shape)
@@ -82,7 +95,9 @@ class Adapter(nn.Module):
     
     def decode(self, x):  # here x is the two-value bit matrix
         index = binary_rows_to_decimal(x).unsqueeze(1)
-        temp = torch.zeros(index.shape[0], 2 ** self.quant_num_bits).cuda().scatter(1, index, 1)  # create a one-hot matrix to select corresponding code
+        temp = torch.zeros(
+            index.shape[0], 2 ** self.quant_num_bits, device=self.code_book.weight.device
+        ).scatter(1, index, 1)  # create a one-hot matrix to select corresponding code
 
         out = torch.matmul(temp, self.code_book.weight)
 
