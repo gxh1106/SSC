@@ -64,6 +64,8 @@ OpenSource/
 data/
 sDAC/
 SwinJSCC/
-experiments/
+rqvae_transformer*/
+
+/experiments*/
 # 忽略所有以 output 开头的文件夹（包含内容）
 /output*/

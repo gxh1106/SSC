@@ -1,0 +1,42 @@
+name: infer_fas_SRx2
+scale: &scale_val 2
+
+manual_seed: 0
+
+num_Nr: 4
+H_size: &H_size_val [60, 240]
+
+# the dataset to be input
+datasets:
+  test_1:
+    name: ChannelInfer
+    dataroot_gt: datasets/FAS/test
+    dataroot_lq: ~
+
+# network structures
+network_g:
+  img_size: *H_size_val
+  upscale: *scale_val
+  in_chans: 2
+  window_size: 10
+  img_range: 1.
+  depths: [6, 6, 6, 6, 6, 6]
+  embed_dim: 180
+  num_heads: [6, 6, 6, 6, 6, 6]
+  mlp_ratio: 2
+  upsampler: 'pixelshuffle'
+  resi_connection: '1conv'
+
+
+# path
+path:
+  pretrain_network_g: ./experiments/pretrained_models/net_g_225000.pth
+  param_key_g: 'params_ema'
+
+# test settings
+val:
+  save_img: true
+  num_save: 2  # number of images to save
+  suffix: ~  # add suffix to saved images, if None, use exp name
+  num_val: 5  # number of test images, if None, use all images in the folder
+
