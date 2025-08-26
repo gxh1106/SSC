@@ -1,0 +1,42 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "My Debug",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/ssc/train.py",
+      "console": "integratedTerminal",
+      "args": [
+        
+      ],
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "4,7"
+      }
+    },
+    {
+      "name": "DDP Debug",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "torch.distributed.run", // 使用 torch.distributed.run 模块
+      "console": "integratedTerminal",
+      "args": [
+        "--nproc_per_node=2",
+        "--nnodes=1",
+        "--node_rank=0",
+        "--master_addr=localhost", // 通常本地调试设为 localhost
+        "--master_port=29500",     // 选择一个未被占用的端口
+        "${workspaceFolder}/ssc/train.py",
+        "-opt",
+        "options/train_SSC_from_scratch.yml",
+        "--launcher",
+        "pytorch"
+      ],
+      "env": {
+        // 如果需要，可以在这里设置环境变量
+        "CUDA_VISIBLE_DEVICES": "6,7"
+      }
+    }
+  ]
+  
+}

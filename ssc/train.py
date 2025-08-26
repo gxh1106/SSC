@@ -5,7 +5,7 @@ from ssc.archs import *
 from ssc.data import *
 from ssc.models import *
 
-from basicsr.train import train_pipeline
+from ssc.train_jscc import train_pipeline
 
 if __name__ == '__main__':
     root_path = osp.abspath(osp.join(__file__, osp.pardir, osp.pardir))

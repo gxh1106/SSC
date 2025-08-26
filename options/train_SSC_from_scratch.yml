@@ -1,0 +1,125 @@
+# general settings
+name: train_SSC_from_scratch
+model_type: SSCModel
+scale: 2
+num_gpu: auto
+manual_seed: 42
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: div2k
+    type: HR_image
+    dataroot_gt: datasets/DIV2K/DIV2K_train_HR
+    # dataroot_lq: datasets/DIV2K/DIV2K_train_LR_bicubic/X2_sub
+    # meta_info_file: drct/data/meta_info/meta_info_DIV2K800sub_GT.txt
+    io_backend:
+      type: disk
+
+    gt_size: &img_value 256
+    use_hflip: true
+    use_rot: true
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 6
+    batch_size_per_gpu: 4
+    dataset_enlarge_ratio: 1
+    prefetch_mode: ~
+
+  val_1:
+    name: kodak
+    type: HR_image
+    dataroot_gt: ./datasets/Kodak24
+    # dataroot_lq: ./datasets/Set5/LRbicx2
+    io_backend:
+      type: disk
+
+  # val_2:
+  #   name: Set14
+  #   type: PairedImageDataset
+  #   dataroot_gt: ./datasets/Set14/GTmod12
+  #   dataroot_lq: ./datasets/Set14/LRbicx2
+  #   io_backend:
+  #     type: disk
+
+
+# network structures
+network_g:
+  type: SwinJSCC
+  args:
+    model_size: small
+    C: !!str 96
+    channel-type: awgn           # ['awgn', 'rayleigh']
+    model: SwinJSCC_w/o_SAandRA  # ['SwinJSCC_w/o_SAandRA', 'SwinJSCC_w/_SA', 'SwinJSCC_w/_RA', 'SwinJSCC_w/_SAandRA']
+    multiple_snr: !!str 10             # multiple SNRs, split by comma e.g., 0,5,10,15,20
+    distortion_metric: MSE       # ['MSE', 'MS-SSIM']
+    trainset: DIV2K
+    testset: kodak
+    training: true
+
+    pass_channel: true
+    image_dims: [3, *img_value, *img_value]
+    downsample: 4
+    norm: false
+  
+# path
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+  resume_state: ~
+
+# training settings
+train:
+  ema_decay: 0.999
+  optim_g:
+    type: Adam
+    lr: !!float 2e-4
+    weight_decay: 0
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [250000, 400000, 450000, 475000]
+    gamma: 0.5
+
+  total_iter: 500000
+  warmup_iter: -1  # no warm up
+
+  # losses
+  pixel_opt:
+    type: mse_loss
+    loss_weight: 1.0
+    reduction: mean
+
+# validation settings
+val:
+  val_freq: !!float 5e3
+  save_img: false
+  pbar: False
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 2
+      test_y_channel: true
+      better: higher  # the higher, the better. Default: higher
+    ssim:
+      type: calculate_ssim
+      crop_border: 2
+      test_y_channel: true
+      better: higher  # the higher, the better. Default: higher
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500
