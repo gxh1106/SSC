@@ -127,15 +127,15 @@ venv.bak/
 
 
 # My Rules
+datasets/
+experiments/
+results/
+tb_logger/
+wandb/
+tmp/
+
 # !experiments/pretrained_models/
 # !experiments/pretrained_models/*
-
-datasets/*
-experiments/*
-results/*
-tb_logger/*
-wandb/*
-tmp/*
 
 RobustSemanComm-main/
 rq-vae-transformer-main/
@@ -144,7 +144,7 @@ Semantic-Digital-Analog-Converter-main/
 OpenSource/
 sDAC/
 SwinJSCC/
-rqvae_transformer*/
+rqvae_transformer/
 
 # 忽略所有以 output 开头的文件夹（包含内容）
 /output*/
