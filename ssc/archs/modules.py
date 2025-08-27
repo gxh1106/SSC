@@ -1,5 +1,5 @@
 import torch.nn as nn
-from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+from timm.layers import DropPath, to_2tuple, trunc_normal_
 import torch
 from bisect import bisect
 import torch.nn.functional as F

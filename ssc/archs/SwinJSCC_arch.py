@@ -14,10 +14,10 @@ class SwinJSCC(nn.Module):
         self.encoder = SwinJSCC_Encoder(**encoder_kwargs)
         self.decoder = SwinJSCC_Decoder(**decoder_kwargs)
 
-        self.distortion_loss = Distortion(args)
+        # self.distortion_loss = Distortion(args)
         self.channel = Channel(args)
         self.pass_channel = args.pass_channel
-        self.squared_difference = torch.nn.MSELoss(reduction='none')
+        # self.squared_difference = torch.nn.MSELoss(reduction='none')
         self.H = self.W = 0
         self.multiple_snr = [int(snr) for snr in args.multiple_snr.split(",")]
         self.channel_number = [int(c) for c in args.C.split(",")]
@@ -72,7 +72,9 @@ class SwinJSCC(nn.Module):
             noisy_feature = noisy_feature * mask
 
         recon_image = self.decoder(noisy_feature, chan_param, self.model)
-        mse = self.squared_difference(input_image * 255., recon_image.clamp(0., 1.) * 255.)
-        loss_G = self.distortion_loss.forward(input_image, recon_image.clamp(0., 1.))
-        return recon_image, CBR, chan_param, mse.mean(), loss_G.mean()
+
+        return recon_image, CBR, chan_param
+        # mse = self.squared_difference(input_image * 255., recon_image.clamp(0., 1.) * 255.)
+        # loss_G = self.distortion_loss.forward(input_image, recon_image.clamp(0., 1.))
+        # return recon_image, CBR, chan_param, mse.mean(), loss_G.mean()
 

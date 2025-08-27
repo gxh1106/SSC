@@ -23,17 +23,18 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 6
-    batch_size_per_gpu: 4
+    batch_size_per_gpu: 16
     dataset_enlarge_ratio: 1
     prefetch_mode: ~
 
   val_1:
     name: kodak
-    type: HR_image
+    type: KodakDataset
     dataroot_gt: ./datasets/Kodak24
     # dataroot_lq: ./datasets/Set5/LRbicx2
     io_backend:
       type: disk
+    crop_divisor: 128
 
   # val_2:
   #   name: Set14
@@ -45,12 +46,13 @@ datasets:
 
 
 # network structures
+find_unused_parameters: true
 network_g:
   type: SwinJSCC
   args:
     model_size: small
     C: !!str 96
-    channel-type: awgn           # ['awgn', 'rayleigh']
+    channel_type: awgn           # ['awgn', 'rayleigh']
     model: SwinJSCC_w/o_SAandRA  # ['SwinJSCC_w/o_SAandRA', 'SwinJSCC_w/_SA', 'SwinJSCC_w/_RA', 'SwinJSCC_w/_SAandRA']
     multiple_snr: !!str 10             # multiple SNRs, split by comma e.g., 0,5,10,15,20
     distortion_metric: MSE       # ['MSE', 'MS-SSIM']
@@ -62,7 +64,7 @@ network_g:
     image_dims: [3, *img_value, *img_value]
     downsample: 4
     norm: false
-  
+
 # path
 path:
   pretrain_network_g: ~
@@ -88,14 +90,14 @@ train:
 
   # losses
   pixel_opt:
-    type: mse_loss
+    type: MSELoss
     loss_weight: 1.0
     reduction: mean
 
 # validation settings
 val:
   val_freq: !!float 5e3
-  save_img: false
+  save_img: true
   pbar: False
 
   metrics:

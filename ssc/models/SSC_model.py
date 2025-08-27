@@ -90,22 +90,22 @@ class SSCModel(BaseModel):
         self.optimizers.append(self.optimizer_g)
 
     def feed_data(self, data):
-        self.gt = data['gt'].to(self.device)
+        self.input = data['gt'].to(self.device)
 
     def optimize_parameters(self, current_iter):
         self.optimizer_g.zero_grad()
-        self.output = self.net_g(self.lq)
+        self.output, CBR, chan_param = self.net_g(self.input)
 
         l_total = 0
         loss_dict = OrderedDict()
         # pixel loss
         if self.cri_pix:
-            l_pix = self.cri_pix(self.output, self.gt)
+            l_pix = self.cri_pix(self.output, self.input)
             l_total += l_pix
             loss_dict['l_pix'] = l_pix
         # perceptual loss
         if self.cri_perceptual:
-            l_percep, l_style = self.cri_perceptual(self.output, self.gt)
+            l_percep, l_style = self.cri_perceptual(self.output, self.input)
             if l_percep is not None:
                 l_total += l_percep
                 loss_dict['l_percep'] = l_percep
@@ -125,60 +125,12 @@ class SSCModel(BaseModel):
         if hasattr(self, 'net_g_ema'):
             self.net_g_ema.eval()
             with torch.no_grad():
-                self.output = self.net_g_ema(self.lq)
+                self.output, CBR, chan_param = self.net_g_ema(self.input)
         else:
             self.net_g.eval()
             with torch.no_grad():
-                self.output = self.net_g(self.lq)
+                self.output, CBR, chan_param = self.net_g(self.input)
             self.net_g.train()
-
-    def test_selfensemble(self):
-        # TODO: to be tested
-        # 8 augmentations
-        # modified from https://github.com/thstkdgus35/EDSR-PyTorch
-
-        def _transform(v, op):
-            # if self.precision != 'single': v = v.float()
-            v2np = v.data.cpu().numpy()
-            if op == 'v':
-                tfnp = v2np[:, :, :, ::-1].copy()
-            elif op == 'h':
-                tfnp = v2np[:, :, ::-1, :].copy()
-            elif op == 't':
-                tfnp = v2np.transpose((0, 1, 3, 2)).copy()
-
-            ret = torch.Tensor(tfnp).to(self.device)
-            # if self.precision == 'half': ret = ret.half()
-
-            return ret
-
-        # prepare augmented data
-        lq_list = [self.lq]
-        for tf in 'v', 'h', 't':
-            lq_list.extend([_transform(t, tf) for t in lq_list])
-
-        # inference
-        if hasattr(self, 'net_g_ema'):
-            self.net_g_ema.eval()
-            with torch.no_grad():
-                out_list = [self.net_g_ema(aug) for aug in lq_list]
-        else:
-            self.net_g.eval()
-            with torch.no_grad():
-                out_list = [self.net_g_ema(aug) for aug in lq_list]
-            self.net_g.train()
-
-        # merge results
-        for i in range(len(out_list)):
-            if i > 3:
-                out_list[i] = _transform(out_list[i], 't')
-            if i % 4 > 1:
-                out_list[i] = _transform(out_list[i], 'h')
-            if (i % 4) % 2 == 1:
-                out_list[i] = _transform(out_list[i], 'v')
-        output = torch.cat(out_list, dim=0)
-
-        self.output = output.mean(dim=0, keepdim=True)
 
     def dist_validation(self, dataloader, current_iter, tb_logger, save_img):
         if self.opt['rank'] == 0:
@@ -203,20 +155,18 @@ class SSCModel(BaseModel):
             pbar = tqdm(total=len(dataloader), unit='image')
 
         for idx, val_data in enumerate(dataloader):
-            img_name = osp.splitext(osp.basename(val_data['lq_path'][0]))[0]
+            img_name = osp.splitext(osp.basename(val_data['gt_path'][0]))[0]
             self.feed_data(val_data)
             self.test()
 
             visuals = self.get_current_visuals()
             sr_img = tensor2img([visuals['result']])
             metric_data['img'] = sr_img
-            if 'gt' in visuals:
-                gt_img = tensor2img([visuals['gt']])
-                metric_data['img2'] = gt_img
-                del self.gt
+            gt_img = tensor2img([visuals['gt']])
+            metric_data['img2'] = gt_img
 
             # tentative for out of GPU memory
-            del self.lq
+            del self.input
             del self.output
             torch.cuda.empty_cache()
 
@@ -268,10 +218,8 @@ class SSCModel(BaseModel):
 
     def get_current_visuals(self):
         out_dict = OrderedDict()
-        out_dict['lq'] = self.lq.detach().cpu()
+        out_dict['gt'] = self.input.detach().cpu()
         out_dict['result'] = self.output.detach().cpu()
-        if hasattr(self, 'gt'):
-            out_dict['gt'] = self.gt.detach().cpu()
         return out_dict
 
     def save(self, epoch, current_iter):

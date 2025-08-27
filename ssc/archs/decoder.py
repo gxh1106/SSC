@@ -96,7 +96,7 @@ class SwinJSCC_Decoder(nn.Module):
                                norm_layer=norm_layer,
                                upsample=PatchReverseMerging)
             self.layers.append(layer)
-            print("Decoder ", layer.extra_repr())
+            # print("Decoder ", layer.extra_repr())
         if C != None:
             self.head_list = nn.Linear(C, embed_dims[0])
         self.apply(self._init_weights)

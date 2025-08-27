@@ -239,7 +239,7 @@ class SwinJSCC_Encoder(nn.Module):
                                qkv_bias=qkv_bias, qk_scale=qk_scale,
                                norm_layer=norm_layer,
                                downsample=PatchMerging if i_layer != 0 else None)
-            print("Encoder ", layer.extra_repr())
+            # print("Encoder ", layer.extra_repr())
             self.layers.append(layer)
         self.norm = norm_layer(embed_dims[-1])
         if C != None:

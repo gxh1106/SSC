@@ -86,7 +86,13 @@ class HR_image(data.Dataset):
         # crop the unmatched GT images during validation or testing, especially for SR benchmark datasets
         # TODO: It is better to update the datasets, rather than force to crop
         if self.opt['phase'] != 'train':
-            img_gt = img_gt[0:gt_size, 0:gt_size, :]
+            # img_gt = img_gt[0:gt_size, 0:gt_size, :] # 这是左上角裁剪
+    
+            # 改为中心裁剪
+            h, w, _ = img_gt.shape
+            top = (h - gt_size) // 2
+            left = (w - gt_size) // 2
+            img_gt = img_gt[top:top + gt_size, left:left + gt_size, :]
 
         # BGR to RGB, HWC to CHW, numpy to tensor
         img_gt = img2tensor(img_gt, bgr2rgb=True, float32=True)
@@ -124,6 +130,74 @@ class HR_image(data.Dataset):
             img_gts = img_gts[0]
 
         return img_gts
+    
+
+@DATASET_REGISTRY.register()
+class KodakDataset(data.Dataset):
+    """Dataset for testing on Kodak24.
+
+    This version implements the user's specified cropping logic:
+    It performs a center crop on the image, rounding the dimensions down
+    to the nearest multiple of a specified divisor (e.g., 128).
+
+    Args:
+        opt (dict): Config for the dataset. It contains the following keys:
+            dataroot_gt (str): Data root path for ground-truth images.
+            crop_divisor (int): The number to which dimensions are rounded down.
+                                Default is 128.
+            io_backend (dict): IO backend type and other kwarg.
+    """
+
+    def __init__(self, opt):
+        super(KodakDataset, self).__init__()
+        self.opt = opt
+        self.file_client = None
+        self.io_backend_opt = opt['io_backend']
+        self.mean = opt.get('mean')
+        self.std = opt.get('std')
+        self.gt_folder = opt['dataroot_gt']
+        
+        # 从配置中获取裁剪的整除数，默认为 128
+        self.crop_divisor = opt.get('crop_divisor', 128)
+
+        image_extensions = ('png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff')
+        self.paths = sorted(list(scandir(self.gt_folder, suffix=image_extensions, full_path=True)))
+
+    def __getitem__(self, index):
+        if self.file_client is None:
+            self.file_client = FileClient(self.io_backend_opt.pop('type'), **self.io_backend_opt)
+
+        gt_path = self.paths[index]
+        img_bytes = self.file_client.get(gt_path, 'gt')
+        img_gt_numpy = imfrombytes(img_bytes, float32=True)
+
+        # 1. 获取原始图像尺寸
+        original_h, original_w, _ = img_gt_numpy.shape
+
+        # 2. 计算向下取整的目标尺寸
+        target_h = original_h - original_h % self.crop_divisor
+        target_w = original_w - original_w % self.crop_divisor
+
+        # 3. 执行中心裁剪 (在 numpy 数组上)
+        top = (original_h - target_h) // 2
+        left = (original_w - target_w) // 2
+        cropped_img = img_gt_numpy[top:top + target_h, left:left + target_w, ...]
+
+        # BGR to RGB, HWC to CHW, numpy to tensor
+        img_gt = img2tensor(cropped_img, bgr2rgb=True, float32=True)
+
+        # Normalize if needed
+        if self.mean is not None or self.std is not None:
+            normalize(img_gt, self.mean, self.std, inplace=True)
+
+        return {
+            'gt': img_gt,
+            'gt_path': gt_path
+            # 【注意】这里不再需要返回 'original_size'，因为图像已经被裁剪
+        }
+
+    def __len__(self):
+        return len(self.paths)
     
 
 @DATASET_REGISTRY.register()
