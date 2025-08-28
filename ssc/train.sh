@@ -1,9 +1,10 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES="3,4"
+export CUDA_VISIBLE_DEVICES="2,3,4"
 
-NPROC_PER_NODE=2
+NPROC_PER_NODE=3
 MASTER_PORT=29500
+
 SCRIPT_PATH="ssc/train.py"
 OPTIONS_PATH="options/train_SSC_from_scratch.yml"
 
@@ -16,3 +17,5 @@ python -m torch.distributed.run \
     $SCRIPT_PATH \
     -opt $OPTIONS_PATH \
     --launcher pytorch 
+
+# tensorboard --logdir tb_logger
