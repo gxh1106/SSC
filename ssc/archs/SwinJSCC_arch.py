@@ -1,7 +1,7 @@
 from .decoder import *
 from .encoder import *
 from .channel import Channel
-from loss.distortion import Distortion
+from .quantizations import RQBottleneck
 from random import choice
 import torch.nn as nn
 

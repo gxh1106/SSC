@@ -141,6 +141,13 @@ def train_pipeline(root_path):
             window_size=8, mlp_ratio=4., qkv_bias=True, qk_scale=None,
             norm_layer=nn.LayerNorm, patch_norm=True,
         )
+
+        # opt['network_g']['rq_kwargs'] = dict(
+        #     img_size=(image_dims[1], image_dims[2]),
+        #     embed_dims=[320, 256, 192, 128], depths=[2, 2, 2, 2], num_heads=[10, 8, 6, 4], C=channel_number,
+        #     window_size=8, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+        #     norm_layer=nn.LayerNorm, patch_norm=True,
+        # )
     elif opt_args.model_size == 'base':
         opt['network_g']['encoder_kwargs'] = dict(
             img_size=(image_dims[1], image_dims[2]), patch_size=2, in_chans=3,

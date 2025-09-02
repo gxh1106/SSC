@@ -221,7 +221,7 @@ class SwinJSCC_Encoder(nn.Module):
         self.patches_resolution = img_size
         self.H = img_size[0] // (2 ** self.num_layers)
         self.W = img_size[1] // (2 ** self.num_layers)
-        self.patch_embed = PatchEmbed(img_size, 2, 3, embed_dims[0])
+        self.patch_embed = PatchEmbed(img_size, self.patch_size, self.in_chans, embed_dims[0])
         self.hidden_dim = int(self.embed_dims[len(embed_dims)-1] * 1.5)
         self.layer_num = layer_num = 7
 

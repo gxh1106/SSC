@@ -47,10 +47,10 @@ datasets:
 # network structures
 find_unused_parameters: true
 network_g:
-  type: SwinSSC
+  type: SwinJSCC
   args:
-    model_size: small
-    C: &feature_dim 96
+    model_size: base
+    C: !!str 96
     channel_type: awgn           # ['awgn', 'rayleigh']
     model: SwinJSCC_w/o_SAandRA  # ['SwinJSCC_w/o_SAandRA', 'SwinJSCC_w/_SA', 'SwinJSCC_w/_RA', 'SwinJSCC_w/_SAandRA']
     multiple_snr: !!str 10             # multiple SNRs, split by comma e.g., 0,5,10,15,20
@@ -63,31 +63,6 @@ network_g:
     image_dims: [3, *img_value, *img_value]
     downsample: 4
     norm: false
-  rq_kwargs:
-    restart_unused_codes: true
-    bottleneck_type: rq
-    latent_shape: [16, 16, *feature_dim]
-    embed_dim: 4 # dimension of embedding
-    n_embed: 16  # embed num in one codebook
-    rq_depth: 4  # RQ depth
-    shared_codebook: true
-    decay: 0.99
-    # restart_unused_codes: true
-    # use_padding_idx: false
-    # masked_dropout: 0.0
-    # bottleneck_type: rq
-    # embed_dim: 96  # conv for quantization
-    # n_embed: 8  # embed num in one codebook
-    # latent_shape: # embed vector dim in codebook is latent_shape[0]*latent_shape[1] / (code_shape[0]*code_shape[1]) * latent_shape[2]
-    # - 16
-    # - 16
-    # - 96
-    # code_shape: # output of quantizer
-    # - 8
-    # - 8
-    # - 4 # quantization depth
-    # shared_codebook: true
-    # decay: 0.99
 
 # path
 path:

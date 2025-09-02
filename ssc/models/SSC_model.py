@@ -94,9 +94,9 @@ class SSCModel(BaseModel):
 
     def optimize_parameters(self, current_iter):
         self.optimizer_g.zero_grad()
-        self.output, CBR, chan_param = self.net_g(self.input)
+        self.output, CBR, chan_param, loss_commit, embed_idxs = self.net_g(self.input)
 
-        l_total = 0
+        l_total = loss_commit
         loss_dict = OrderedDict()
         # pixel loss
         if self.cri_pix:
@@ -125,11 +125,11 @@ class SSCModel(BaseModel):
         if hasattr(self, 'net_g_ema'):
             self.net_g_ema.eval()
             with torch.no_grad():
-                self.output, CBR, chan_param = self.net_g_ema(self.input)
+                self.output, CBR, chan_param, loss_commit, embed_idxs = self.net_g_ema(self.input)
         else:
             self.net_g.eval()
             with torch.no_grad():
-                self.output, CBR, chan_param = self.net_g(self.input)
+                self.output, CBR, chan_param, loss_commit, embed_idxs = self.net_g(self.input)
             self.net_g.train()
 
     def dist_validation(self, dataloader, current_iter, tb_logger, save_img):
