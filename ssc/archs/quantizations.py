@@ -73,7 +73,7 @@ class BSC_channel(nn.Module):
             self.bit_flip_prob = bit_flip_prob
         
         out = x.clone()
-        noise = torch.rand_like(x) < self.bit_flip_prob
+        noise = torch.rand_like(x.float()) < self.bit_flip_prob
         out[noise] = 1 - out[noise]
 
         return dict(
@@ -362,17 +362,32 @@ class RQBottleneck(nn.Module):
         commitment_loss = torch.mean(torch.stack(loss_list1)) + 0.25 * torch.mean(torch.stack(loss_list2))
         return commitment_loss
     
-    def ad(self, x):
-        x_reshaped = self.to_code_shape(x)
+    def ad(self, x, feat_shape=None):
+        if self.training:
+            # --- 训练路径 ---
+            x_reshaped = self.to_code_shape(x)
+            shape_info = None
+        else:
+            # --- 验证/评估路径 ---
+            if feat_shape is None:
+                raise ValueError("`feat_shape` (H_feat, W_feat) must be provided during evaluation.")
+            x_reshaped, shape_info = self._encode_dynamic_3d(x, feat_shape)
+
         quant_list, embed_idxs = self.quantize(x_reshaped)
 
         commitment_loss = self.compute_commitment_loss(x_reshaped, quant_list)
 
-        return x_reshaped, quant_list[-1], commitment_loss, embed_idxs
+        return x_reshaped, quant_list[-1], commitment_loss, embed_idxs, shape_info
     
-    def da(self, quant_recon):
-        quants_trunc = self.to_latent_shape(quant_recon)
-        return quants_trunc
+    def da(self, quant_recon, shape_info=None):
+        if shape_info is None:
+            # --- 训练路径 ---
+            assert self.training, "shape_info is required during evaluation mode."
+            feature_dequant = self.to_latent_shape(quant_recon)
+        else:
+            # --- 验证/评估路径 ---
+            feature_dequant = self._decode_dynamic_3d(quant_recon, shape_info)
+        return feature_dequant
     
     def feature_pass_channel(self, embed_idxs, chan_param):
         p_value = calculate_p_from_snr_db(chan_param)
@@ -416,3 +431,36 @@ class RQBottleneck(nn.Module):
             quant_recon.add_(embeds)
 
         return quant_recon
+
+
+
+
+    def _encode_dynamic_3d(self, x, feat_shape):
+        """[内部辅助函数] 动态编码，处理3D可变尺寸输入。"""
+        B, L, C = x.shape
+        H, W = feat_shape
+        assert L == H * W, f"Dynamic input sequence length {L} does not match provided H*W ({H*W})"
+        
+        # Reshape 3D -> 4D for Conv2d
+        x_4d = x.permute(0, 2, 1).view(B, C, H, W).contiguous()
+        
+        x_4d = self.pre_quant(x_4d)
+        x_4d = x_4d.permute(0, 2, 3, 1).contiguous()
+        x_flatten = x_4d.reshape(-1, self.embed_dim)
+        
+        # 保存动态维度信息
+        shape_info = (B, H, W)
+        return x_flatten, shape_info
+
+    def _decode_dynamic_3d(self, x_quantized_flat, shape_info):
+        """[内部辅助函数] 动态解码，使用shape_info恢复3D尺寸。"""
+        B, H, W = shape_info
+        C = self.latent_shape[-1] # 通道数是固定的
+
+        x_4d = x_quantized_flat.view(B, H, W, self.embed_dim * C)
+        x_4d = x_4d.permute(0, 3, 1, 2).contiguous()
+        x_4d = self.post_quant(x_4d)
+        
+        # Reshape 4D -> 3D
+        x_3d = x_4d.permute(0, 2, 3, 1).contiguous().view(B, H * W, C)
+        return x_3d

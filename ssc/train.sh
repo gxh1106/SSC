@@ -16,6 +16,7 @@ python -m torch.distributed.run \
     --master_port=$MASTER_PORT \
     $SCRIPT_PATH \
     -opt $OPTIONS_PATH \
-    --launcher pytorch 
+    --launcher pytorch \
+    # --debug
 
 # tensorboard --logdir tb_logger

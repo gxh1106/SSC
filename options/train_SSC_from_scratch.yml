@@ -65,7 +65,6 @@ network_g:
     norm: false
   rq_kwargs:
     restart_unused_codes: true
-    bottleneck_type: rq
     latent_shape: [16, 16, *feature_dim]
     embed_dim: 4 # dimension of embedding
     n_embed: 16  # embed num in one codebook
