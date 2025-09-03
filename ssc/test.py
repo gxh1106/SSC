@@ -1,9 +1,9 @@
 # flake8: noqa
 import os.path as osp
 
-import drct.archs
-import drct.data
-import drct.models
+from .archs import *
+from .data import *
+from .models import *
 from basicsr.test import test_pipeline
 
 if __name__ == '__main__':
