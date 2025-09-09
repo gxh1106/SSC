@@ -389,41 +389,63 @@ class RQBottleneck(nn.Module):
             feature_dequant = self._decode_dynamic_3d(quant_recon, shape_info)
         return feature_dequant
     
-    def feature_pass_channel(self, embed_idxs, chan_param):
-        p_value = calculate_p_from_snr_db(chan_param)
-        all_bit_streams = []
-        # 将整数索引转换为比特流
+    def feature_pass_channel(self, embed_idxs, chan_param, noise_config=None):
+        """
+        将嵌入索引转换为比特流，通过BSC信道，再转换回索引，并重构量化矢量。
+        可以根据 noise_config 对特定层施加更强的噪声。
+
+        参数:
+            embed_idxs (torch.Tensor): 形状为 [N, rq_depth] 的码本索引。
+            chan_param (float): 用于计算基础比特错误率的信道参数 (例如 SNR in dB)。
+            noise_config (dict, optional): 指定噪声注入策略的字典。
+                例如: {'target_layer': 0, 'noise_factor': 10}
+                - 'target_layer' (int): 要施加更强噪声的层级索引。
+                - 'noise_factor' (float): 噪声增强因子，p_new = p_base * noise_factor。
+                默认为 None，表示所有层使用相同的噪声水平。
+
+        返回:
+            torch.Tensor: 重构后的量化矢量。
+        """
+        # 1. 根据SNR计算基础的比特错误概率
+        p_base = calculate_p_from_snr_db(chan_param)
+
+        noisy_idxs_list = []
+        
+        # 2. 逐层处理：转换比特 -> 施加噪声 -> 转换回索引
         for i in range(self.rq_depth):
+            # --- a. 将当前层的索引转换为比特流 ---
             indices_level_i = embed_idxs[:, i]
             num_bits = self.num_bits_per_level[i]
-
             binary_tensor = decimal_to_binary_rows(indices_level_i, num_bits)
-            all_bit_streams.append(binary_tensor)
-        concatenated_bits = torch.cat(all_bit_streams, dim=1)
 
-        # 将比特流通过BSC信道
-        channel_output = self.channel(concatenated_bits, bit_flip_prob=p_value)
-        noisy_bits = channel_output['out']
-
-        # 将带噪比特转换回整数索引
-        noisy_idxs_list = []
-        current_pos = 0
-        for i in range(self.rq_depth):
-            num_bits = self.num_bits_per_level[i]
-            n_embed_i = self.n_embed[i]
+            # --- b. 确定当前层的噪声水平 ---
+            p_final = p_base # 默认使用基础噪声
             
-            bit_segment = noisy_bits[:, current_pos : current_pos + num_bits]
-            current_pos += num_bits
+            # 如果提供了噪声配置，并且当前层是目标层
+            if noise_config and noise_config.get('target_layer') == i:
+                noise_factor = noise_config.get('noise_factor', 1.0)
+                p_final = p_base * noise_factor
+                # 钳位操作：比特错误率p不应超过0.5
+                p_final = torch.clamp(p_final, max=0.5) 
+                # print(f"Layer {i}: Applying stronger noise. Base p: {p_base.item():.2e}, Final p: {p_final.item():.2e}")
 
-            noisy_indices_level_i = binary_rows_to_decimal(bit_segment)
+            # --- c. 将当前层的比特流独立地通过BSC信道 ---
+            channel_output = self.channel(binary_tensor, bit_flip_prob=p_final)
+            noisy_bits = channel_output['out']
+
+            # --- d. 将带噪比特转换回整数索引 ---
+            n_embed_i = self.n_embed[i]
+            noisy_indices_level_i = binary_rows_to_decimal(noisy_bits)
+            
             # 钳位操作，防止因比特错误导致的索引越界
             noisy_indices_level_i = torch.clamp(noisy_indices_level_i, 0, n_embed_i - 1)
             
             noisy_idxs_list.append(noisy_indices_level_i.unsqueeze(1))
 
+        # 3. 将各层得到的带噪索引拼接起来
         noisy_idxs = torch.cat(noisy_idxs_list, dim=1)
 
-        # 从新的（带噪）索引重构量化矢量
+        # 4. 从新的（带噪）索引重构量化矢量
         N, _ = embed_idxs.shape
         quant_recon = torch.zeros(N, self.embed_dim, device=embed_idxs.device)
         for i in range(self.rq_depth):
@@ -431,6 +453,48 @@ class RQBottleneck(nn.Module):
             quant_recon.add_(embeds)
 
         return quant_recon
+    # def feature_pass_channel(self, embed_idxs, chan_param):
+    #     p_value = calculate_p_from_snr_db(chan_param)
+    #     all_bit_streams = []
+    #     # 将整数索引转换为比特流
+    #     for i in range(self.rq_depth):
+    #         indices_level_i = embed_idxs[:, i]
+    #         num_bits = self.num_bits_per_level[i]
+
+    #         binary_tensor = decimal_to_binary_rows(indices_level_i, num_bits)
+    #         all_bit_streams.append(binary_tensor)
+    #     concatenated_bits = torch.cat(all_bit_streams, dim=1)
+
+    #     # 将比特流通过BSC信道
+    #     channel_output = self.channel(concatenated_bits, bit_flip_prob=p_value)
+    #     noisy_bits = channel_output['out']
+
+    #     # 将带噪比特转换回整数索引
+    #     noisy_idxs_list = []
+    #     current_pos = 0
+    #     for i in range(self.rq_depth):
+    #         num_bits = self.num_bits_per_level[i]
+    #         n_embed_i = self.n_embed[i]
+            
+    #         bit_segment = noisy_bits[:, current_pos : current_pos + num_bits]
+    #         current_pos += num_bits
+
+    #         noisy_indices_level_i = binary_rows_to_decimal(bit_segment)
+    #         # 钳位操作，防止因比特错误导致的索引越界
+    #         noisy_indices_level_i = torch.clamp(noisy_indices_level_i, 0, n_embed_i - 1)
+            
+    #         noisy_idxs_list.append(noisy_indices_level_i.unsqueeze(1))
+
+    #     noisy_idxs = torch.cat(noisy_idxs_list, dim=1)
+
+    #     # 从新的（带噪）索引重构量化矢量
+    #     N, _ = embed_idxs.shape
+    #     quant_recon = torch.zeros(N, self.embed_dim, device=embed_idxs.device)
+    #     for i in range(self.rq_depth):
+    #         embeds = self.codebooks[i].embed(noisy_idxs[:, i])
+    #         quant_recon.add_(embeds)
+
+    #     return quant_recon
 
 
 

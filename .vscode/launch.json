@@ -37,6 +37,27 @@
         // 如果需要，可以在这里设置环境变量
         "CUDA_VISIBLE_DEVICES": "1"
       }
+    },
+    {
+      "name": "Infer Debug",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/ssc/inference.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--config",
+        "experiments/train_SSC_from_scratch_small/train_SSC_from_scratch.yml",
+        "--model_path",
+        "experiments/train_SSC_from_scratch_small/models/net_g_latest.pth",
+        "--input",
+        "datasets/Kodak24",
+        "--output",
+        "output/test_SwinSSC"
+      ],
+      "env": {
+        // 如果需要，可以在这里设置环境变量
+        "CUDA_VISIBLE_DEVICES": "1"
+      }
     }
   ]
   
