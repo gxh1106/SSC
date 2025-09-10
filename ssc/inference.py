@@ -13,6 +13,8 @@ import torch.nn.functional as F
 from basicsr.archs import build_network
 from ssc.archs.SwinSSC_arch import SwinSSC
 
+from ssc.faim import FA_IM_Channel
+
 from addict import Dict
 
 def calculate_psnr(img1, img2, max_val=1.0):
@@ -174,10 +176,10 @@ def main():
     )
     # 在加载权重之前，手动调用 update_resolution，强制模型采用训练时的尺寸
     #    这会重建 attn_mask，使其与 checkpoint 中的尺寸完全匹配
-    # downsample_ratio = 2 ** model.downsample
-    # H_feat, W_feat = image_dims[1] // downsample_ratio, image_dims[2] // downsample_ratio
-    # model.encoder.update_resolution(image_dims[1], image_dims[2])
-    # model.decoder.update_resolution(H_feat, W_feat)
+    downsample_ratio = 2 ** model.downsample
+    H_feat, W_feat = image_dims[1] // downsample_ratio, image_dims[2] // downsample_ratio
+    model.encoder.update_resolution(image_dims[1], image_dims[2])
+    model.decoder.update_resolution(H_feat, W_feat)
 
     load_net = torch.load(args.model_path, map_location=lambda storage, loc: storage)
     key = 'params_ema' if 'params_ema' in load_net else 'params'
@@ -191,7 +193,14 @@ def main():
     
     model.eval()
     model = model.to(device)
-    
+
+    K = 4         # 活动端口数 
+    M = 64         # 星座大小 (例如，64-QAM，需要 6 比特符号)
+    N = 16         # 总可用端口数
+    Nr = 8        # 接收天线数
+    H_pool = torch.randn(1, Nr, N, dtype=torch.cfloat) 
+    fa_bit_system = FA_IM_Channel(K=K, M=M, N=N, Nr=Nr, H=H_pool, device=device)
+
     os.makedirs(args.output, exist_ok=True)
 
     crop_divisor = opt['datasets'].get('val_1', {}).get('crop_divisor', 128)
@@ -235,7 +244,7 @@ def main():
         
         for snr in snr_range:
             with torch.no_grad():
-                output = model.forward_faim(img_gt, given_SNR=snr)[0]
+                output = model.forward_faim(img_gt, given_SNR=snr, system=fa_bit_system)[0]
 
                 psnr_val = calculate_psnr(img_gt, output)
                 psnr_results[snr].append(psnr_val.item())

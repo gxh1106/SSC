@@ -63,7 +63,7 @@ class SwinSSC(nn.Module):
 
         return recon_image, CBR, chan_param, loss_commit, embed_idxs
     
-    def forward_faim(self, input_image, given_SNR=None):
+    def forward_faim(self, input_image, given_SNR=None, system=None):
         B, _, H, W = input_image.shape
 
         if H != self.H or W != self.W:
@@ -93,7 +93,9 @@ class SwinSSC(nn.Module):
             if self.pass_channel:
                 noise_config_L0 = {'target_layer': 3, 'noise_factor': 10000} # L0层加100倍的噪声
                 # noisy_quant = self.quantizer.feature_pass_channel(embed_idxs, chan_param, noise_config=noise_config_L0)
-                noisy_quant = self.quantizer.feature_pass_channel(embed_idxs, chan_param)
+                # noisy_quant = self.quantizer.feature_pass_channel(embed_idxs, chan_param)
+                noisy_idxs = system(embed_idxs, chan_param)
+                noisy_quant = self.quantizer.embed(noisy_idxs)
             else:
                 noisy_quant = feature_quant
 

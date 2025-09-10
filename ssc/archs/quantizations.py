@@ -496,6 +496,15 @@ class RQBottleneck(nn.Module):
 
     #     return quant_recon
 
+    def embed(self, noisy_idxs):
+        # 4. 从新的（带噪）索引重构量化矢量
+        N, _ = noisy_idxs.shape
+        quant_recon = torch.zeros(N, self.embed_dim, device=noisy_idxs.device)
+        for i in range(self.rq_depth):
+            embeds = self.codebooks[i].embed(noisy_idxs[:, i])
+            quant_recon.add_(embeds)
+
+        return quant_recon
 
 
 
