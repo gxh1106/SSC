@@ -17,6 +17,19 @@ from ssc.faim import FA_IM_Channel
 
 from addict import Dict
 
+import random
+
+def set_seed(seed: int):
+    """
+    为 PyTorch, NumPy 和 Python 的 random 模块设置随机种子以保证可复现性。
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # 适用于多 GPU 环境
+
 def calculate_psnr(img1, img2, max_val=1.0):
     img1 = img1.to(torch.float64)
     img2 = img2.to(torch.float64)
@@ -92,6 +105,9 @@ def calculate_ms_ssim(X, Y, window, data_range: float, weights, use_padding: boo
 
 
 def main():
+    seed = 42
+    set_seed(seed)
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, required=True, help='Path to the training YAML config file.')
     parser.add_argument('--model_path', type=str, required=True, help='Path to the pre-trained model file (.pth).')
@@ -198,8 +214,14 @@ def main():
     M = 64         # 星座大小 (例如，64-QAM，需要 6 比特符号)
     N = 16         # 总可用端口数
     Nr = 8        # 接收天线数
-    H_pool = torch.randn(1, Nr, N, dtype=torch.cfloat) 
-    fa_bit_system = FA_IM_Channel(K=K, M=M, N=N, Nr=Nr, H=H_pool, device=device)
+    # 定义信道物理参数
+    W = 2  # 流体天线宽度为W个波长
+    L_paths = 10      # 多径数
+    num_H = 2     # 创建num_H个不同的信道实现
+
+    snr_range = list(range(0, 22, 2))
+
+    fa_im_system = FA_IM_Channel(K=K, M=M, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device)
 
     os.makedirs(args.output, exist_ok=True)
 
@@ -209,7 +231,7 @@ def main():
     msssim_window = create_window(11, channel=3).to(device)
     msssim_weights = torch.tensor([0.0448, 0.2856, 0.3001, 0.2363, 0.1333]).to(device)
 
-    snr_range = list(range(0, 18, 2))
+    
     psnr_results = {snr: [] for snr in snr_range}
     ms_ssim_results = {snr: [] for snr in snr_range}
 
@@ -222,7 +244,6 @@ def main():
         return
 
     for path in tqdm(image_paths, desc="Processing Images"):
-        imgname = os.path.splitext(os.path.basename(path))[0]
         
         img_gt_numpy = cv2.imread(path, cv2.IMREAD_COLOR).astype(np.float32) / 255.
         
@@ -243,13 +264,18 @@ def main():
         img_gt = img_gt.unsqueeze(0).to(device)
         
         for snr in snr_range:
-            with torch.no_grad():
-                output = model.forward_faim(img_gt, given_SNR=snr, system=fa_bit_system)[0]
+            psnr_per_channel = []
+            ms_ssim_per_channel = []
+            for idx_H in range(num_H):
+                with torch.no_grad():
+                    output = model.forward_faim(img_gt, given_SNR=snr, channel=fa_im_system, idx_H=idx_H)[0]
+                    psnr_val = calculate_psnr(img_gt, output)
+                    psnr_per_channel.append(psnr_val.item())
+                    ms_ssim_val = calculate_ms_ssim(img_gt, output, window=msssim_window, data_range=1.0, weights=msssim_weights)
+                    ms_ssim_per_channel.append(ms_ssim_val.item())
 
-                psnr_val = calculate_psnr(img_gt, output)
-                psnr_results[snr].append(psnr_val.item())
-                ms_ssim_val = calculate_ms_ssim(img_gt, output, window=msssim_window, data_range=1.0, weights=msssim_weights)
-                ms_ssim_results[snr].append(ms_ssim_val.item())
+            psnr_results[snr].append(np.mean(psnr_per_channel))
+            ms_ssim_results[snr].append(np.mean(ms_ssim_per_channel))
 
     avg_psnr_list = []
     avg_ms_ssim_list = []
