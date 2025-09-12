@@ -288,8 +288,25 @@ class FA_IM_Channel(nn.Module):
         # --- 4. 解码: 最大似然检测 ---
         # y_noisy shape: (Nr, num_frames), lookup_table shape: (Nr, K*M)
         # 我们需要比较 y_noisy 的每一列 和 lookup_table 的每一列
-        distances = torch.sum(torch.abs(y_noisy.unsqueeze(1) - decode_lookup_table.unsqueeze(2))**2, dim=0)    # Shape: (K*M, num_frames)
-        decoded_flat_indices = torch.argmin(distances, dim=0)
+        # distances = torch.sum(torch.abs(y_noisy.unsqueeze(1) - decode_lookup_table.unsqueeze(2))**2, dim=0)    # Shape: (K*M, num_frames)
+        # decoded_flat_indices = torch.argmin(distances, dim=0)
+
+        batch_size = 2048 
+        decoded_flat_indices_list = []
+        # 将 y_noisy (Nr, num_frames) 分块处理
+        for i in range(0, num_frames, batch_size):
+            # 获取当前块
+            y_batch = y_noisy[:, i : i + batch_size] # Shape: (Nr, batch_size)
+            # 使用广播计算当前块的距离，这将创建一个较小的中间张量
+            # (Nr, batch_size, 1) vs (Nr, 1, K*M) -> (Nr, batch_size, K*M) -> (batch_size, K*M)
+            distances_batch = torch.sum(torch.abs(y_batch.unsqueeze(2) - decode_lookup_table.unsqueeze(1))**2, dim=0)
+            # distances_batch shape: (batch_size, K*M)
+            # 找到当前块的最小距离索引
+            decoded_indices_batch = torch.argmin(distances_batch, dim=1)
+            decoded_flat_indices_list.append(decoded_indices_batch)
+        # 将所有块的结果拼接成一个完整的张量
+        decoded_flat_indices = torch.cat(decoded_flat_indices_list, dim=0)
+
 
         # --- 5. 重建: 将检测结果转换回 (L, depth) 索引 ---
         decoded_port_indices = torch.div(decoded_flat_indices, self.M, rounding_mode='floor')
@@ -323,6 +340,193 @@ class FA_IM_Channel(nn.Module):
             # 恢复为原始形状
             bit_groups = decoded_bit_stream.view(BL, depth, self.bits_per_input_index)
             output_indices = self._bits_to_decimal(bit_groups)
+        return output_indices
+    
+
+
+class FA_SISO_Channel(nn.Module):
+    """
+    PyTorch模块，用于模拟流体天线（FA-SISO）信道。
+
+    该模块将输入的二进制张量通过FA-SISO方案进行加扰、信道传输和最大似然解码，
+    最终输出带噪声的二进制张量。
+    """
+    def __init__(self, N: int, Nr: int, M: int, num_H: int, W: float, L_paths: int, device: str = 'cuda'):
+        super().__init__()
+
+        # --- 1. 参数验证 ---
+        assert math.log2(M).is_integer()
+
+        self.N = N
+        self.Nr = Nr
+        self.M = M
+        self.device = device
+        # 假设输入的embedding_indices范围是0-15
+        self.bits_per_input_index = int(math.log2(16))
+
+        # 符号比特数
+        self.m_mod = int(math.log2(M))
+        self.num_symbol_bits = self.m_mod
+        
+        # 每帧传输的总比特数
+        self.bits_per_frame = self.num_symbol_bits
+
+        # --- 3. 预计算QAM星座和所有可能的发射信号 ---
+        H_pool = self._generate_mmwave_channel(Nr, N, W, L_paths, num_H, device) # Shape: (num_H, Nr, N)
+        self.Hs_pool = self._select_optimal_channel(H_pool) # Shape: (num_H, Nr, 1)
+        self.constellation = self._generate_qam_constellation().to(device)
+        # 预计算所有可能的无噪声接收信号 y = h * s
+        # (num_H, Nr, 1) @ (1, M) -> (num_H, Nr, M)
+        self.decode_lookup_table_pool = self.Hs_pool @ self.constellation.unsqueeze(0)
+
+    def _generate_mmwave_channel(self, Nr, N, W, L, num_realizations = 1, device = 'cuda') -> torch.Tensor:
+        # 接收端 (Rx): 标准半波长间隔的ULA
+        dr = 1 / 2
+        rx_pos = torch.arange(Nr, device=device, dtype=torch.float32) * dr
+        # 发射端 (Tx): 在宽度W内均匀分布的流体天线ULA
+        dt = W / (N - 1) if N > 1 else 0
+        tx_pos = torch.arange(N, device=device, dtype=torch.float32) * dt
+        # 角度范围 [-pi/2, pi/2] (阵列前方)
+        AoD = (torch.rand(num_realizations, L, device=device) * math.pi) - (math.pi / 2)
+        AoA = (torch.rand(num_realizations, L, device=device) * math.pi) - (math.pi / 2)
+        gains = (torch.randn(num_realizations, L, device=device, dtype=torch.cfloat)) / math.sqrt(L)
+        # --- 计算阵列响应 (Steering Vectors) ---
+        # sin(AoA) shape: (num_realizations, L) -> (num_realizations, L, 1)
+        # rx_pos shape: (Nr,) -> (1, 1, Nr)
+        # 广播后计算相位，结果 shape: (num_realizations, L, Nr)
+        rx_phases = 2 * math.pi * torch.sin(AoA).unsqueeze(2) * rx_pos.view(1, 1, -1)
+        a_r = torch.exp(1j * rx_phases)
+        # sin(AoD) shape: (num_realizations, L) -> (num_realizations, L, 1)
+        # tx_pos shape: (N,) -> (1, 1, N)
+        # 结果 shape: (num_realizations, L, N)
+        tx_phases = 2 * math.pi * torch.sin(AoD).unsqueeze(2) * tx_pos.view(1, 1, -1)
+        a_t = torch.exp(1j * tx_phases)
+        # --- 构建信道矩阵 ---
+        # H = sum over L of [ gain_l * a_r_l * a_t_l^H ]
+        # a_r -> (num_realizations, L, Nr, 1)
+        # a_t_H -> (num_realizations, L, 1, N)
+        # path_response shape: (num_realizations, L, Nr, N)
+        path_response = a_r.unsqueeze(3) @ a_t.unsqueeze(2).conj()
+        # gains -> (num_realizations, L, 1, 1)
+        # 加权并沿路径维度求和
+        H = torch.sum(gains.view(num_realizations, L, 1, 1) * path_response, dim=1)
+        return H
+
+    def _select_optimal_channel(self, H_pool) -> torch.Tensor:
+        """
+        从H_pool中为每个信道实现选择L2范数最大的单个端口。
+        """
+        # H_pool shape: (num_H, Nr, N)
+        # 计算每个端口（列）的L2范数
+        # norms shape: (num_H, N)
+        norms = torch.linalg.vector_norm(H_pool, dim=1)
+        
+        # 找到每个信道实现中范数最大的端口的索引
+        # best_port_indices shape: (num_H,)
+        best_port_indices = torch.argmax(norms, dim=1)
+        
+        # 使用 gather 从 H_pool 中高效地选出对应的列
+        # 索引需要被扩展以匹配 gather 的要求
+        # (num_H,) -> (num_H, 1, 1) -> (num_H, Nr, 1)
+        indices_to_gather = best_port_indices.view(-1, 1, 1).expand(-1, self.Nr, 1)
+        
+        # H_best shape: (num_H, Nr, 1)
+        H_best = H_pool.gather(2, indices_to_gather)
+        return H_best
+    
+    def _generate_qam_constellation(self) -> torch.Tensor:
+        """
+        生成一个单位平均功率且采用格雷映射的QAM星座点集。
+        """
+        assert math.sqrt(self.M).is_integer(), "M必须是完全平方数，例如4, 16, 64。"
+        # 1. 生成一维格雷码索引
+        m_1d = int(math.log2(math.sqrt(self.M)))
+        gray_map_1d = torch.zeros(2**m_1d, dtype=torch.long)
+        for i in range(2**m_1d):
+            gray_map_1d[i] = i ^ (i >> 1)
+        # 2. 创建星座点网格
+        sqrt_m = int(math.sqrt(self.M))
+        axis_points = torch.arange(-(sqrt_m - 1), sqrt_m, 2, device=self.device)
+        # 3. 生成二维格雷映射的星座点
+        constellation = torch.zeros(self.M, dtype=torch.cfloat, device=self.device)
+        for i in range(sqrt_m): # 实部索引
+            for j in range(sqrt_m): # 虚部索引
+                # 将常规二进制索引 (i, j) 映射到格雷码索引
+                gray_i = gray_map_1d[i]
+                gray_j = gray_map_1d[j]
+                # 计算最终的十进制索引
+                dec_index = i * sqrt_m + j
+                constellation[dec_index] = axis_points[gray_i] + 1j * axis_points[gray_j]
+        
+        # 4. 归一化以实现单位平均功率
+        power = torch.mean(torch.abs(constellation)**2)
+        return constellation / torch.sqrt(power)
+
+    def _bits_to_decimal(self, bits: torch.Tensor) -> torch.Tensor:
+        """将一批二进制张量转换为十进制数。"""
+        mask = 2**torch.arange(bits.shape[-1] - 1, -1, -1, device=self.device)
+        return torch.sum(mask * bits, dim=-1)
+
+    def _decimal_to_bits(self, decimal: torch.Tensor, num_bits: int) -> torch.Tensor:
+        """将十进制数转换为指定位数的二进制张量。"""
+        mask = 2**torch.arange(num_bits - 1, -1, -1, device=self.device)
+        return decimal.unsqueeze(-1).bitwise_and(mask).ne(0).long()
+
+    def forward(self, embedding_indices: torch.Tensor, snr_db: float, idx_H: int = 0, **kwargs) -> torch.Tensor:
+        original_shape = embedding_indices.shape
+        BL, depth = original_shape
+        
+        # --- 1. 选择信道和对应的解码表 ---
+        H_selected = self.Hs_pool[idx_H]              # Shape: (Nr, 1)
+        decode_lookup_table = self.decode_lookup_table_pool[idx_H] # Shape: (Nr, M)
+
+        # --- 2. 统一编码、补零与分帧 ---
+        bit_tensor = self._decimal_to_bits(embedding_indices, self.bits_per_input_index)
+        bit_stream = bit_tensor.view(-1)
+        original_total_bits = bit_stream.shape[0]
+
+        remainder = original_total_bits % self.bits_per_frame
+        if remainder != 0:
+            padding = torch.zeros(self.bits_per_frame - remainder, dtype=torch.uint8, device=self.device)
+            padded_bit_stream = torch.cat([bit_stream, padding])
+        else:
+            padded_bit_stream = bit_stream
+            
+        num_frames = padded_bit_stream.shape[0] // self.bits_per_frame
+        if num_frames == 0: return torch.zeros_like(embedding_indices)
+        
+        symbol_bits = padded_bit_stream.view(num_frames, self.m_mod)
+        symbol_indices = self._bits_to_decimal(symbol_bits)
+
+        # --- 3. 传输 y = h*s + n ---
+        s = self.constellation[symbol_indices] # Shape: (num_frames,)
+        
+        # (Nr, 1) @ (1, num_frames) -> (Nr, num_frames)
+        y_noiseless = H_selected @ s.unsqueeze(0)
+
+        noise_variance = torch.tensor(1 / (10**(snr_db / 10.0)))
+        noise = torch.sqrt(noise_variance / 2) * (torch.randn_like(y_noiseless) + 1j * torch.randn_like(y_noiseless))
+        y_noisy = y_noiseless + noise
+
+        # --- 4. 解码 (分块处理以节省内存) ---
+        batch_size = 2048
+        decoded_symbol_indices_list = []
+        for i in range(0, num_frames, batch_size):
+            y_batch = y_noisy[:, i : i + batch_size]
+            # (Nr, batch_size, 1) vs (Nr, 1, M) -> (Nr, batch_size, M) -> (batch_size, M)
+            distances_batch = torch.sum(torch.abs(y_batch.unsqueeze(2) - decode_lookup_table.unsqueeze(1))**2, dim=0)
+            decoded_indices_batch = torch.argmin(distances_batch, dim=1)
+            decoded_symbol_indices_list.append(decoded_indices_batch)
+        
+        decoded_symbol_indices = torch.cat(decoded_symbol_indices_list, dim=0)
+
+        # --- 5. 重建 ---
+        decoded_padded_stream = self._decimal_to_bits(decoded_symbol_indices, self.m_mod).view(-1)
+        decoded_bit_stream = decoded_padded_stream[:original_total_bits]
+        
+        bit_groups = decoded_bit_stream.view(BL, depth, self.bits_per_input_index)
+        output_indices = self._bits_to_decimal(bit_groups)
+        
         return output_indices
     
 

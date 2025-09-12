@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from basicsr.archs import build_network
 from ssc.archs.SwinSSC_arch import SwinSSC
 
-from ssc.faim import FA_IM_Channel
+from ssc.faim import FA_IM_Channel, FA_SISO_Channel
 
 from addict import Dict
 
@@ -223,6 +223,9 @@ def main():
 
     fa_im_system = FA_IM_Channel(K=K, M=M, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device)
 
+    M_fas_simo = 256  # SIMO FAS 的星座大小
+    fa_simo_system = FA_SISO_Channel(M=M_fas_simo, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device)
+
     os.makedirs(args.output, exist_ok=True)
 
     crop_divisor = opt['datasets'].get('val_1', {}).get('crop_divisor', 128)
@@ -269,6 +272,7 @@ def main():
             for idx_H in range(num_H):
                 with torch.no_grad():
                     output = model.forward_faim(img_gt, given_SNR=snr, channel=fa_im_system, idx_H=idx_H)[0]
+                    # output = model.forward_faim(img_gt, given_SNR=snr, channel=fa_simo_system, idx_H=idx_H)[0]
                     psnr_val = calculate_psnr(img_gt, output)
                     psnr_per_channel.append(psnr_val.item())
                     ms_ssim_val = calculate_ms_ssim(img_gt, output, window=msssim_window, data_range=1.0, weights=msssim_weights)
