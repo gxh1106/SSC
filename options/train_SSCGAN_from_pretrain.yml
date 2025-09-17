@@ -1,6 +1,6 @@
 # general settings
-name: train_SSC_from_scratch
-model_type: SSCModel
+name: train_SSCGAN_CR_1_8
+model_type: SSCGANModel
 num_gpu: auto
 manual_seed: 42
 
@@ -47,10 +47,10 @@ datasets:
 # network structures
 find_unused_parameters: true
 network_g:
-  type: SwinJSCC
+  type: SwinSSC
   args:
-    model_size: base
-    C: !!str 96
+    model_size: small
+    C: &feature_dim 48
     channel_type: awgn           # ['awgn', 'rayleigh']
     model: SwinJSCC_w/o_SAandRA  # ['SwinJSCC_w/o_SAandRA', 'SwinJSCC_w/_SA', 'SwinJSCC_w/_RA', 'SwinJSCC_w/_SAandRA']
     multiple_snr: !!str -2,1,4,7,10,13             # multiple SNRs, split by comma e.g., 0,5,10,15,20
@@ -63,10 +63,39 @@ network_g:
     image_dims: [3, *img_value, *img_value]
     downsample: 4
     norm: false
+  rq_kwargs:
+    restart_unused_codes: true
+    latent_shape: [16, 16, *feature_dim]
+    embed_dim: 4 # dimension of embedding
+    n_embed: 16  # embed num in one codebook
+    rq_depth: 4  # RQ depth
+    shared_codebook: true
+    decay: 0.99
+    # restart_unused_codes: true
+    # use_padding_idx: false
+    # masked_dropout: 0.0
+    # bottleneck_type: rq
+    # embed_dim: 96  # conv for quantization
+    # n_embed: 8  # embed num in one codebook
+    # latent_shape: # embed vector dim in codebook is latent_shape[0]*latent_shape[1] / (code_shape[0]*code_shape[1]) * latent_shape[2]
+    # - 16
+    # - 16
+    # - 96
+    # code_shape: # output of quantizer
+    # - 8
+    # - 8
+    # - 4 # quantization depth
+    # shared_codebook: true
+    # decay: 0.99
+network_d:
+  type: VGGStyleDiscriminator
+  num_in_ch: 3
+  num_feat: 64
+  input_size: *img_value
 
 # path
 path:
-  pretrain_network_g: ~
+  pretrain_network_g: experiments/train_SSC_from_scratch_small/models/net_g_latest.pth
   strict_load_g: true
   resume_state: ~
 
@@ -75,7 +104,12 @@ train:
   ema_decay: 0.999    # set 0 to disable, 0.999 is a good value
   optim_g:
     type: Adam
-    lr: !!float 3e-5
+    lr: !!float 1e-5
+    weight_decay: 0
+    betas: [0.9, 0.99]
+  optim_d:
+    type: Adam
+    lr: !!float 1e-4
     weight_decay: 0
     betas: [0.9, 0.99]
 
@@ -93,7 +127,26 @@ train:
     type: MSELoss
     loss_weight: 1.0
     reduction: mean
+  commit_loss_weight: !!float 0.25  # for RQ
+  perceptual_opt:
+    type: PerceptualLoss
+    layer_weights:
+      'conv5_4': 1  # before relu
+    vgg_type: vgg19
+    use_input_norm: true
+    range_norm: false
+    perceptual_weight: 1.0
+    style_weight: 0
+    criterion: l1
+  gan_opt:
+    type: GANLoss
+    gan_type: vanilla
+    real_label_val: 1.0
+    fake_label_val: 0.0
+    loss_weight: !!float 0.75
 
+  net_d_iters: 1
+  net_d_init_iters: 0
 # validation settings
 val:
   val_freq: !!float 5e3

@@ -1,5 +1,5 @@
 # general settings
-name: train_SSC_from_scratch
+name: train_SSC_CR_1_8
 model_type: SSCModel
 num_gpu: auto
 manual_seed: 42
@@ -35,22 +35,14 @@ datasets:
       type: disk
     crop_divisor: 128
 
-  # val_2:
-  #   name: Set14
-  #   type: PairedImageDataset
-  #   dataroot_gt: ./datasets/Set14/GTmod12
-  #   dataroot_lq: ./datasets/Set14/LRbicx2
-  #   io_backend:
-  #     type: disk
-
 
 # network structures
 find_unused_parameters: true
 network_g:
-  type: SwinJSCC
+  type: SwinSSC
   args:
-    model_size: base
-    C: !!str 96
+    model_size: small
+    C: &feature_dim 48
     channel_type: awgn           # ['awgn', 'rayleigh']
     model: SwinJSCC_w/o_SAandRA  # ['SwinJSCC_w/o_SAandRA', 'SwinJSCC_w/_SA', 'SwinJSCC_w/_RA', 'SwinJSCC_w/_SAandRA']
     multiple_snr: !!str -2,1,4,7,10,13             # multiple SNRs, split by comma e.g., 0,5,10,15,20
@@ -63,10 +55,34 @@ network_g:
     image_dims: [3, *img_value, *img_value]
     downsample: 4
     norm: false
+  rq_kwargs:
+    restart_unused_codes: true
+    latent_shape: [16, 16, *feature_dim]
+    embed_dim: 4 # dimension of embedding
+    n_embed: 16  # embed num in one codebook
+    rq_depth: 4  # RQ depth
+    shared_codebook: true
+    decay: 0.99
+    # restart_unused_codes: true
+    # use_padding_idx: false
+    # masked_dropout: 0.0
+    # bottleneck_type: rq
+    # embed_dim: 96  # conv for quantization
+    # n_embed: 8  # embed num in one codebook
+    # latent_shape: # embed vector dim in codebook is latent_shape[0]*latent_shape[1] / (code_shape[0]*code_shape[1]) * latent_shape[2]
+    # - 16
+    # - 16
+    # - 96
+    # code_shape: # output of quantizer
+    # - 8
+    # - 8
+    # - 4 # quantization depth
+    # shared_codebook: true
+    # decay: 0.99
 
 # path
 path:
-  pretrain_network_g: ~
+  pretrain_network_g: experiments/train_SSC_from_scratch_small/models/net_g_latest.pth
   strict_load_g: true
   resume_state: ~
 
@@ -76,6 +92,11 @@ train:
   optim_g:
     type: Adam
     lr: !!float 3e-5
+    weight_decay: 0
+    betas: [0.9, 0.99]
+  optim_d:
+    type: Adam
+    lr: !!float 1e-4
     weight_decay: 0
     betas: [0.9, 0.99]
 
@@ -93,7 +114,8 @@ train:
     type: MSELoss
     loss_weight: 1.0
     reduction: mean
-
+  commit_loss_weight: !!float 0.25  # for RQ
+  
 # validation settings
 val:
   val_freq: !!float 5e3

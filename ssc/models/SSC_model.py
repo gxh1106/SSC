@@ -7,6 +7,8 @@ from collections import OrderedDict
 from os import path as osp
 from tqdm import tqdm
 
+from copy import deepcopy
+
 from basicsr.archs import build_network
 from basicsr.losses import build_loss
 from basicsr.metrics import calculate_metric
@@ -37,6 +39,105 @@ class SSCModel(BaseModel):
         if self.is_train:
             self.init_training_settings()
 
+    def load_network(self, net, load_path, strict=True, param_key='params'):
+        """修改后的网络加载函数.
+
+        此函数可以灵活加载权重，能够处理某些层（如全连接层）尺寸不匹配
+        以及特定缓存（如attn_mask）需要被忽略的情况。
+
+        Args:
+            load_path (str): The path of networks to be loaded.
+            net (nn.Module): Network.
+            strict (bool): 在此实现中，主要通过手动比较来控制加载，此参数作用有限。
+            param_key (str): The parameter key of loaded network. If set to
+                None, use the root 'path'.
+                Default: 'params'.
+        """
+        logger = get_root_logger()
+        net = self.get_bare_model(net)
+        load_net = torch.load(load_path, map_location=lambda storage, loc: storage)
+        if param_key is not None:
+            if param_key not in load_net and 'params' in load_net:
+                param_key = 'params'
+                logger.info('Loading: params_ema does not exist, use params.')
+            # 兼容不带params键的权重文件
+            if param_key in load_net:
+                load_net = load_net[param_key]
+        logger.info(f'Loading {net.__class__.__name__} model from {load_path}, with param key: [{param_key}].')
+        
+        # 移除不必要的 'module.' 前缀
+        for k, v in deepcopy(load_net).items():
+            if k.startswith('module.'):
+                load_net[k[7:]] = v
+                load_net.pop(k)
+
+        # 1. 移除所有 attn_mask，避免尺寸强行匹配错误
+        filtered_load_net = {}
+        removed_keys = []
+        for k, v in load_net.items():
+            if "attn_mask" in k:
+                removed_keys.append(k)
+            else:
+                filtered_load_net[k] = v
+        if removed_keys:
+            logger.info(f'Removed keys containing "attn_mask": {removed_keys}')
+
+        # 2. 准备加载最终匹配的权重
+        model_state_dict = net.state_dict()
+        final_load_dict = {}
+        mismatched_shape_keys = []
+        
+        for k, v in filtered_load_net.items():
+            if k in model_state_dict:
+                # 只加载名称和形状都匹配的权重
+                if model_state_dict[k].shape == v.shape:
+                    final_load_dict[k] = v
+                else:
+                    mismatched_shape_keys.append(
+                        f"{k} (pretrained shape: {v.shape}, model shape: {model_state_dict[k].shape})")
+        
+        if mismatched_shape_keys:
+            logger.warning(f'Skipped loading keys due to shape mismatch: {mismatched_shape_keys}')
+
+        # 3. 使用 strict=False 加载，以处理新模型中存在但预训练模型中没有的层
+        # (例如，如果您添加了全新的层)
+        missing_keys, unexpected_keys = net.load_state_dict(final_load_dict, strict=False)
+
+        if missing_keys:
+            logger.info(f'Keys not found in pre-trained model (kept random init): {missing_keys}')
+        # unexpected_keys 应该为空，因为我们已经筛选过了，但为了安全起见仍然打印
+        if unexpected_keys:
+            logger.warning(f'Keys from pre-trained model not found in new model: {unexpected_keys}')
+
+
+    # def load_network(self, net, load_path, strict=True, param_key='params'):
+    #     """Load network.
+
+    #     Args:
+    #         load_path (str): The path of networks to be loaded.
+    #         net (nn.Module): Network.
+    #         strict (bool): Whether strictly loaded.
+    #         param_key (str): The parameter key of loaded network. If set to
+    #             None, use the root 'path'.
+    #             Default: 'params'.
+    #     """
+    #     logger = get_root_logger()
+    #     net = self.get_bare_model(net)
+    #     load_net = torch.load(load_path, map_location=lambda storage, loc: storage)
+    #     if param_key is not None:
+    #         if param_key not in load_net and 'params' in load_net:
+    #             param_key = 'params'
+    #             logger.info('Loading: params_ema does not exist, use params.')
+    #         load_net = load_net[param_key]
+    #     logger.info(f'Loading {net.__class__.__name__} model from {load_path}, with param key: [{param_key}].')
+    #     # remove unnecessary 'module.'
+    #     for k, v in deepcopy(load_net).items():
+    #         if k.startswith('module.'):
+    #             load_net[k[7:]] = v
+    #             load_net.pop(k)
+    #     self._print_different_keys_loading(net, load_net, strict)
+    #     net.load_state_dict(load_net, strict=strict)
+
     def init_training_settings(self):
         self.net_g.train()
         train_opt = self.opt['train']
@@ -60,6 +161,7 @@ class SSCModel(BaseModel):
         # define losses
         if train_opt.get('pixel_opt'):
             self.cri_pix = build_loss(train_opt['pixel_opt']).to(self.device)
+            self.commit_loss_weight = train_opt.get('commit_loss_weight', 0.25)
         else:
             self.cri_pix = None
 
@@ -96,7 +198,7 @@ class SSCModel(BaseModel):
         self.optimizer_g.zero_grad()
         self.output, CBR, chan_param, loss_commit, embed_idxs = self.net_g(self.input)
 
-        l_total = loss_commit
+        l_g_total = self.commit_loss_weight * loss_commit
         loss_dict = OrderedDict()
         # pixel loss
         if self.cri_pix:
