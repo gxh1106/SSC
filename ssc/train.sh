@@ -1,12 +1,17 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES="4,5,6,7"
+# export CUDA_VISIBLE_DEVICES="4,5,6,7"
+# NPROC_PER_NODE=4
 
-NPROC_PER_NODE=4
+export CUDA_VISIBLE_DEVICES="6,7"
+# export CUDA_VISIBLE_DEVICES="2,3"
+NPROC_PER_NODE=2
+
 MASTER_PORT=29500
+# MASTER_PORT=29501
 
 SCRIPT_PATH="ssc/train.py"
-OPTIONS_PATH="options/train_SSCGAN_from_pretrain.yml"
+OPTIONS_PATH="options/train_SSC_from_pretrain.yml"
 
 python -m torch.distributed.run \
     --nproc_per_node=$NPROC_PER_NODE \
@@ -17,6 +22,7 @@ python -m torch.distributed.run \
     $SCRIPT_PATH \
     -opt $OPTIONS_PATH \
     --launcher pytorch \
+    --auto_resume
     # --debug
 
 # tensorboard --logdir tb_logger

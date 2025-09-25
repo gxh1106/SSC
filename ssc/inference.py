@@ -271,8 +271,8 @@ def main():
             ms_ssim_per_channel = []
             for idx_H in range(num_H):
                 with torch.no_grad():
-                    output = model.forward_faim(img_gt, given_SNR=snr, channel=fa_im_system, idx_H=idx_H)[0]
-                    # output = model.forward_faim(img_gt, given_SNR=snr, channel=fa_simo_system, idx_H=idx_H)[0]
+                    # output = model.forward_faim(img_gt, given_SNR=snr, channel=fa_im_system, idx_H=idx_H)[0]
+                    output = model.forward_faim(img_gt, given_SNR=snr, channel=fa_simo_system, idx_H=idx_H)[0]
                     psnr_val = calculate_psnr(img_gt, output)
                     psnr_per_channel.append(psnr_val.item())
                     ms_ssim_val = calculate_ms_ssim(img_gt, output, window=msssim_window, data_range=1.0, weights=msssim_weights)

@@ -257,10 +257,17 @@ class FA_IM_Channel(nn.Module):
                 
             # 分割成帧
             num_frames = padded_bit_stream.shape[0] // self.bits_per_frame
-            framed_bits = padded_bit_stream.view(num_frames, self.bits_per_frame)
-            
-            index_bits = framed_bits[:, :self.m_index]
-            symbol_bits = framed_bits[:, self.m_index:]
+
+            # framed_bits = padded_bit_stream.view(num_frames, self.bits_per_frame)
+            # index_bits = framed_bits[:, :self.m_index]
+            # symbol_bits = framed_bits[:, self.m_index:]
+
+            total_index_bits = num_frames * self.m_index
+            # 从 padded_bit_stream 的最前面分割出所有 index bits
+            index_bits_flat = padded_bit_stream[:total_index_bits]
+            index_bits = index_bits_flat.view(num_frames, self.m_index)
+            symbol_bits_flat = padded_bit_stream[total_index_bits:]
+            symbol_bits = symbol_bits_flat.view(num_frames, self.bits_per_frame - self.m_index)
 
             port_indices = self._bits_to_decimal(index_bits)
             symbol_indices = self._bits_to_decimal(symbol_bits)
@@ -332,7 +339,11 @@ class FA_IM_Channel(nn.Module):
             # --- [方案 B: ssc=False, 均等保护 (EEP) 重建] ---
             decoded_index_bits = self._decimal_to_bits(decoded_port_indices, self.m_index)
             decoded_symbol_bits = self._decimal_to_bits(decoded_symbol_indices, self.m_mod)
-            decoded_padded_stream = torch.cat([decoded_index_bits, decoded_symbol_bits], dim=1).view(-1)
+            # decoded_padded_stream = torch.cat([decoded_index_bits, decoded_symbol_bits], dim=1).view(-1)
+
+            flat_index_bits = decoded_index_bits.view(-1)
+            flat_symbol_bits = decoded_symbol_bits.view(-1)
+            decoded_padded_stream = torch.cat([flat_index_bits, flat_symbol_bits], dim=0)
             
             # 截断，移除补零位
             decoded_bit_stream = decoded_padded_stream[:original_total_bits]

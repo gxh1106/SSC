@@ -1,5 +1,5 @@
 # general settings
-name: train_SSC_CR_1_8
+name: train_SSC_CR_1_8_code4
 model_type: SSCModel
 num_gpu: auto
 manual_seed: 42
@@ -42,10 +42,10 @@ network_g:
   type: SwinSSC
   args:
     model_size: small
-    C: &feature_dim 48
+    C: &feature_dim 96
     channel_type: awgn           # ['awgn', 'rayleigh']
     model: SwinJSCC_w/o_SAandRA  # ['SwinJSCC_w/o_SAandRA', 'SwinJSCC_w/_SA', 'SwinJSCC_w/_RA', 'SwinJSCC_w/_SAandRA']
-    multiple_snr: !!str -2,1,4,7,10,13             # multiple SNRs, split by comma e.g., 0,5,10,15,20
+    multiple_snr: !!str 1,4,7,10,13,16             # multiple SNRs, split by comma e.g., 1,4,7,10,13
     distortion_metric: MSE       # ['MSE', 'MS-SSIM']
     trainset: DIV2K
     testset: kodak
@@ -59,7 +59,7 @@ network_g:
     restart_unused_codes: true
     latent_shape: [16, 16, *feature_dim]
     embed_dim: 4 # dimension of embedding
-    n_embed: 16  # embed num in one codebook
+    n_embed: 4  # embed num in one codebook 16
     rq_depth: 4  # RQ depth
     shared_codebook: true
     decay: 0.99
@@ -94,11 +94,6 @@ train:
     lr: !!float 3e-5
     weight_decay: 0
     betas: [0.9, 0.99]
-  optim_d:
-    type: Adam
-    lr: !!float 1e-4
-    weight_decay: 0
-    betas: [0.9, 0.99]
 
   scheduler:
     type: MultiStepLR
@@ -114,7 +109,7 @@ train:
     type: MSELoss
     loss_weight: 1.0
     reduction: mean
-  commit_loss_weight: !!float 0.25  # for RQ
+  commit_loss_weight: !!float 0.25  # 0.25 for RQ-VAE
   
 # validation settings
 val:

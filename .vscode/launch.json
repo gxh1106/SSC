@@ -46,9 +46,9 @@
       "console": "integratedTerminal",
       "args": [
         "--config",
-        "experiments/train_SSC_from_scratch_small/train_SSC_from_scratch.yml",
+        "experiments/train_SSC_CR_1_8_multiSNR_commit0.25/train_SSC_from_pretrain.yml",
         "--model_path",
-        "experiments/train_SSC_from_scratch_small/models/net_g_latest.pth",
+        "experiments/train_SSC_CR_1_8_multiSNR_commit0.25/models/net_g_latest.pth",
         "--input",
         "datasets/Kodak24",
         "--output",

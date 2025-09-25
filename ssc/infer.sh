@@ -5,8 +5,8 @@ set -e
 
 export CUDA_VISIBLE_DEVICES="1"
 
-CONFIG_FILE="experiments/train_SSC_from_scratch_small/train_SSC_from_scratch.yml"
-MODEL_PATH="experiments/train_SSC_from_scratch_small/models/net_g_latest.pth"
+CONFIG_FILE="experiments/train_SSC_CR_1_8_multiSNR/train_SSC_from_pretrain.yml"
+MODEL_PATH="experiments/train_SSC_CR_1_8_multiSNR/models/net_g_latest.pth"
 KODAK24_PATH="datasets/Kodak24"
 OUTPUT_DIR="output/test_SwinSSC"
 
