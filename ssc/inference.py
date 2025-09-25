@@ -221,10 +221,11 @@ def main():
 
     snr_range = list(range(0, 22, 2))
 
-    fa_im_system = FA_IM_Channel(K=K, M=M, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device)
+    codebook_size = opt['network_g']['rq_kwargs']['n_embed']
+    fa_im_system = FA_IM_Channel(K=K, M=M, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device, codebook_size=codebook_size)
 
     M_fas_simo = 256  # SIMO FAS 的星座大小
-    fa_simo_system = FA_SISO_Channel(M=M_fas_simo, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device)
+    fa_simo_system = FA_SISO_Channel(M=M_fas_simo, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device, codebook_size=codebook_size)
 
     os.makedirs(args.output, exist_ok=True)
 

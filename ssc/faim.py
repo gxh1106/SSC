@@ -12,7 +12,7 @@ class FA_IM_Channel(nn.Module):
     最终输出带噪声的二进制张量。
     """
 
-    def __init__(self, K: int, N: int, Nr: int, M: int, num_H: int, W: float, L_paths: int, device: str = 'cuda'):
+    def __init__(self, K: int, N: int, Nr: int, M: int, num_H: int, W: float, L_paths: int, device: str = 'cuda', codebook_size: int = 16):
         """
         初始化FA-IM信道模块。
 
@@ -36,7 +36,7 @@ class FA_IM_Channel(nn.Module):
         self.M = M
         self.device = device
         # 假设输入的embedding_indices范围是0-15
-        self.bits_per_input_index = int(math.log2(16))
+        self.bits_per_input_index = int(math.log2(codebook_size))
 
         # 索引比特数
         self.m_index = int(math.log2(self.K))
@@ -362,7 +362,7 @@ class FA_SISO_Channel(nn.Module):
     该模块将输入的二进制张量通过FA-SISO方案进行加扰、信道传输和最大似然解码，
     最终输出带噪声的二进制张量。
     """
-    def __init__(self, N: int, Nr: int, M: int, num_H: int, W: float, L_paths: int, device: str = 'cuda'):
+    def __init__(self, N: int, Nr: int, M: int, num_H: int, W: float, L_paths: int, device: str = 'cuda', codebook_size: int = 16):
         super().__init__()
 
         # --- 1. 参数验证 ---
@@ -373,7 +373,7 @@ class FA_SISO_Channel(nn.Module):
         self.M = M
         self.device = device
         # 假设输入的embedding_indices范围是0-15
-        self.bits_per_input_index = int(math.log2(16))
+        self.bits_per_input_index = int(math.log2(codebook_size))
 
         # 符号比特数
         self.m_mod = int(math.log2(M))

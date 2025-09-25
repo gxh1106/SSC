@@ -70,7 +70,7 @@ def plot_results(results_folders, labels, save_dir='.'):
 
 # --- 使用示例 ---
 if __name__ == '__main__':
-    subfolder = 'CR_1_8'  # 子文件夹名称
+    subfolder = 'CR_1_8_code4'  # 子文件夹名称
     # 1. 设置包含 .csv 文件的结果文件夹路径
     # 请将这里的路径替换为您自己的实际路径
     result_folders_to_plot = [
