@@ -122,11 +122,62 @@ class VQEmbedding(nn.Embedding):
         distances = distances.reshape(*inputs_shape[:-1], -1)  # [B, h, w, n_embed or n_embed+1]
         return distances
 
-    @torch.no_grad()
-    def find_nearest_embedding(self, inputs):
-        distances = self.compute_distances(inputs)  # [B, h, w, n_embed or n_embed+1]
-        embed_idxs = distances.argmin(dim=-1)  # use padding index or not
+    # @torch.no_grad()
+    # def find_nearest_embedding(self, inputs):
+    #     distances = self.compute_distances(inputs)  # [B, h, w, n_embed or n_embed+1]
+    #     embed_idxs = distances.argmin(dim=-1)  # use padding index or not
 
+    #     return embed_idxs
+    @torch.no_grad()
+    def find_nearest_embedding(self, inputs, chunk_size=256):
+        """
+        Finds the nearest embedding indices without creating the full distance matrix.
+        """
+        # 准备工作
+        codebook_t = self.weight[:-1, :].t()
+        (embed_dim, n_embed) = codebook_t.shape
+        inputs_shape = inputs.shape
+        assert inputs_shape[-1] == embed_dim
+
+        inputs_flat = inputs.reshape(-1, embed_dim)
+        n_vectors = inputs_flat.shape[0]
+
+        # 初始化用于追踪最小距离和对应索引的张量
+        # 用无穷大来初始化最小距离
+        min_distances = torch.full((n_vectors,), float('inf'), device=inputs.device, dtype=inputs.dtype)
+        embed_idxs = torch.zeros(n_vectors, device=inputs.device, dtype=torch.long)
+        
+        # 预先计算输入向量的范数平方
+        inputs_norm_sq = inputs_flat.pow(2.).sum(dim=1, keepdim=True)
+
+        # 迭代计算
+        for i in range(0, n_embed, chunk_size):
+            # 获取当前码本块
+            codebook_t_chunk = codebook_t[:, i:i+chunk_size]
+            
+            # 计算当前块的距离
+            codebook_t_norm_sq_chunk = codebook_t_chunk.pow(2.).sum(dim=0, keepdim=True)
+            distances_chunk = torch.addmm(
+                inputs_norm_sq + codebook_t_norm_sq_chunk,
+                inputs_flat,
+                codebook_t_chunk,
+                alpha=-2.0,
+            )
+            
+            # 在当前块内寻找最小距离及其相对索引
+            chunk_min_distances, chunk_embed_idxs = distances_chunk.min(dim=1)
+            
+            # 确定哪些向量在当前块中找到了更近的码字
+            update_mask = chunk_min_distances < min_distances
+            
+            # 更新全局最小距离
+            min_distances[update_mask] = chunk_min_distances[update_mask]
+            
+            # 更新全局索引，注意要加上块的偏移量 i
+            embed_idxs[update_mask] = chunk_embed_idxs[update_mask] + i
+                
+        # 将最终的索引 reshape 成输入的空间形状
+        embed_idxs = embed_idxs.reshape(*inputs_shape[:-1])
         return embed_idxs
 
     @torch.no_grad()
@@ -138,26 +189,71 @@ class VQEmbedding(nn.Embedding):
         x = x + torch.rand_like(x) * std
         return x    
     
+    # @torch.no_grad()
+    # def _update_buffers(self, vectors, idxs):
+
+    #     n_embed, embed_dim = self.weight.shape[0]-1, self.weight.shape[-1]
+        
+    #     vectors = vectors.reshape(-1, embed_dim)
+    #     idxs = idxs.reshape(-1)
+        
+    #     n_vectors = vectors.shape[0]
+    #     n_total_embed = n_embed
+
+    #     one_hot_idxs = vectors.new_zeros(n_total_embed, n_vectors)
+    #     one_hot_idxs.scatter_(dim=0,
+    #                           index=idxs.unsqueeze(0),
+    #                           src=vectors.new_ones(1, n_vectors)
+    #                           )
+
+    #     cluster_size = one_hot_idxs.sum(dim=1)
+    #     vectors_sum_per_cluster = one_hot_idxs @ vectors
+
+    #     if dist.is_initialized():
+    #         dist.all_reduce(vectors_sum_per_cluster, op=dist.ReduceOp.SUM)
+    #         dist.all_reduce(cluster_size, op=dist.ReduceOp.SUM)
+
+    #     self.cluster_size_ema.mul_(self.decay).add_(cluster_size, alpha=1 - self.decay)
+    #     self.embed_ema.mul_(self.decay).add_(vectors_sum_per_cluster, alpha=1 - self.decay)
+        
+    #     if self.restart_unused_codes:
+    #         if n_vectors < n_embed:
+    #             vectors = self._tile_with_noise(vectors, n_embed)
+    #         n_vectors = vectors.shape[0]
+    #         _vectors_random = vectors[torch.randperm(n_vectors, device=vectors.device)][:n_embed]
+            
+    #         if dist.is_initialized():
+    #             dist.broadcast(_vectors_random, 0)
+        
+    #         usage = (self.cluster_size_ema.view(-1, 1) >= 1).float()
+    #         self.embed_ema.mul_(usage).add_(_vectors_random * (1-usage))
+    #         self.cluster_size_ema.mul_(usage.view(-1))
+    #         self.cluster_size_ema.add_(torch.ones_like(self.cluster_size_ema) * (1-usage).view(-1))
     @torch.no_grad()
     def _update_buffers(self, vectors, idxs):
-
         n_embed, embed_dim = self.weight.shape[0]-1, self.weight.shape[-1]
         
-        vectors = vectors.reshape(-1, embed_dim)
-        idxs = idxs.reshape(-1)
+        vectors_flat = vectors.reshape(-1, embed_dim)
+        idxs_flat = idxs.reshape(-1)
         
-        n_vectors = vectors.shape[0]
-        n_total_embed = n_embed
+        n_vectors = vectors_flat.shape[0]
+        
+        # --- 高效的、避免创建巨大矩阵的实现方式 ---
+        # 1. 计算 cluster_size
+        # torch.bincount 会统计每个索引出现的次数
+        cluster_size = torch.bincount(idxs_flat, minlength=n_embed).float()
+        
+        # 2. 计算 vectors_sum_per_cluster
+        # 创建一个零矩阵用于接收向量和
+        vectors_sum_per_cluster = vectors_flat.new_zeros(n_embed, embed_dim)
+        # 使用 scatter_add_ 将向量加到其对应索引的位置
+        # 这等效于 one_hot_idxs @ vectors，但完全不创建 one_hot_idxs 矩阵
+        vectors_sum_per_cluster.scatter_add_(dim=0, 
+                                            index=idxs_flat.unsqueeze(1).expand_as(vectors_flat), 
+                                            src=vectors_flat)
+        # --- 实现结束 ---
 
-        one_hot_idxs = vectors.new_zeros(n_total_embed, n_vectors)
-        one_hot_idxs.scatter_(dim=0,
-                              index=idxs.unsqueeze(0),
-                              src=vectors.new_ones(1, n_vectors)
-                              )
-
-        cluster_size = one_hot_idxs.sum(dim=1)
-        vectors_sum_per_cluster = one_hot_idxs @ vectors
-
+        # 后续的分布式训练和 EMA 更新逻辑保持不变
         if dist.is_initialized():
             dist.all_reduce(vectors_sum_per_cluster, op=dist.ReduceOp.SUM)
             dist.all_reduce(cluster_size, op=dist.ReduceOp.SUM)
@@ -165,11 +261,12 @@ class VQEmbedding(nn.Embedding):
         self.cluster_size_ema.mul_(self.decay).add_(cluster_size, alpha=1 - self.decay)
         self.embed_ema.mul_(self.decay).add_(vectors_sum_per_cluster, alpha=1 - self.decay)
         
+        # 重启未使用码本的逻辑保持不变
         if self.restart_unused_codes:
             if n_vectors < n_embed:
-                vectors = self._tile_with_noise(vectors, n_embed)
-            n_vectors = vectors.shape[0]
-            _vectors_random = vectors[torch.randperm(n_vectors, device=vectors.device)][:n_embed]
+                vectors_flat = self._tile_with_noise(vectors_flat, n_embed)
+            n_vectors = vectors_flat.shape[0]
+            _vectors_random = vectors_flat[torch.randperm(n_vectors, device=vectors_flat.device)][:n_embed]
             
             if dist.is_initialized():
                 dist.broadcast(_vectors_random, 0)

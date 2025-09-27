@@ -11,7 +11,7 @@ NPROC_PER_NODE=2
 MASTER_PORT=29501
 
 SCRIPT_PATH="ssc/train.py"
-OPTIONS_PATH="options/train_SSC_from_pretrain.yml"
+OPTIONS_PATH="options/train_SSC_VQ_from_pretrain.yml"
 
 python -m torch.distributed.run \
     --nproc_per_node=$NPROC_PER_NODE \

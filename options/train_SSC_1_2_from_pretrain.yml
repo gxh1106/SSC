@@ -1,5 +1,5 @@
 # general settings
-name: train_SSC_CR_1_4
+name: train_SSC_CR_1_2
 model_type: SSCModel
 num_gpu: auto
 manual_seed: 42
@@ -42,7 +42,7 @@ network_g:
   type: SwinSSC
   args:
     model_size: small
-    C: &feature_dim 96
+    C: &feature_dim 192
     channel_type: awgn           # ['awgn', 'rayleigh']
     model: SwinJSCC_w/o_SAandRA  # ['SwinJSCC_w/o_SAandRA', 'SwinJSCC_w/_SA', 'SwinJSCC_w/_RA', 'SwinJSCC_w/_SAandRA']
     multiple_snr: !!str 1,4,7,10,13,16             # multiple SNRs, split by comma e.g., 1,4,7,10,13
