@@ -11,9 +11,9 @@ from tqdm import tqdm
 import torch.nn as nn
 import torch.nn.functional as F
 from basicsr.archs import build_network
-from ssc.archs.SwinSSC_arch import SwinSSC
+from .archs.SwinSSC_arch import SwinSSC
 
-from ssc.faim import FA_IM_Channel, FA_SISO_Channel
+from .faim import FA_IM_Channel, FA_SISO_Channel
 
 from addict import Dict
 

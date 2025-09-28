@@ -320,10 +320,9 @@ class RQBottleneck(nn.Module):
 
     def __init__(self,
                  latent_shape,
-                 embed_dim,
+                 num_quant,
                  n_embed,
                  rq_depth,
-                 num_quant=1,
                  decay=0.99,
                  shared_codebook=False,
                  restart_unused_codes=True
@@ -331,8 +330,8 @@ class RQBottleneck(nn.Module):
         super().__init__()
 
         self.latent_shape = torch.Size(latent_shape)
+        self.embed_dim = self.latent_shape[-1]
         self.num_quant = num_quant
-        self.embed_dim = embed_dim
         self.rq_depth = rq_depth
 
         self.shared_codebook = shared_codebook
@@ -365,12 +364,12 @@ class RQBottleneck(nn.Module):
         # 作用于 (B, C, L) 形状的张量
         self.pre_quant = nn.Conv1d(
             in_channels=self.latent_shape[-1],
-            out_channels=self.num_quant * self.embed_dim * self.latent_shape[-1],
+            out_channels=self.num_quant * self.latent_shape[-1],
             kernel_size=1,
             # groups=self.latent_shape[-1]
         )
         self.post_quant = nn.Conv1d(
-            in_channels=self.num_quant * self.embed_dim * self.latent_shape[-1],
+            in_channels=self.num_quant * self.latent_shape[-1],
             out_channels=self.latent_shape[-1],
             kernel_size=1,
             # groups=self.latent_shape[-1]
@@ -381,28 +380,27 @@ class RQBottleneck(nn.Module):
         self.num_bits_per_level = [(n_embed_i - 1).bit_length() for n_embed_i in self.n_embed[:self.rq_depth]]
 
     def to_code_shape(self, x):
-        # 输入形状为 (B, L, C)
-        x = x.permute(0, 2, 1).contiguous()  # 形状变为 (B, C, L)
-        # (B, C, L) -> (B, num_quant * embed_dim * C, L)
+        # 输入形状为 (B, L, embed_dim)
+        x = x.permute(0, 2, 1).contiguous()  # 形状变为 (B, embed_dim, L)
+        # (B, embed_dim, L) -> (B, num_quant * embed_dim, L)
         x = self.pre_quant(x)
-        # (B, num_quant * embed_dim * C, L) -> (B, L, num_quant * embed_dim * C)
+        # (B, num_quant * embed_dim, L) -> (B, L, num_quant * embed_dim)
         x = x.permute(0, 2, 1).contiguous()
-        # (B, L, num_quant * embed_dim * C) -> (B * L * num_quant * C, embed_dim)
+        # (B, L, num_quant * embed_dim) -> (B * L * num_quant, embed_dim)
         x_flatten = x.reshape(-1, self.embed_dim)
 
         return x_flatten
 
     def to_latent_shape(self, x, B, L):
-        # x 是量化器的输出, 形状为 (B * L * num_quant * C, embed_dim)
-        C = self.latent_shape[-1]
-        assert x.shape[0] == B * L * self.num_quant * C, f"Input sequence length {x.shape[0]} does not match B*L*nq*C ({B*L*self.num_quant*C})"
-        # (B * L * num_quant * C, embed_dim) -> (B, L, embed_dim * num_quant * C)
-        x = x.view(B, L, self.embed_dim * self.num_quant * C)
-        # (B, L, num_quant * embed_dim * C) -> (B, num_quant * embed_dim * C, L)
+        # x 是量化器的输出, 形状为 (B * L * num_quant, embed_dim)
+        assert x.shape[0] == B * L * self.num_quant, f"Input sequence length {x.shape[0]} does not match B*L*C ({B*L*self.num_quant})"
+        # (B * L * self.num_quant, embed_dim) -> (B, L, embed_dim * self.num_quant)
+        x = x.view(B, L, self.embed_dim * self.num_quant)
+        # (B, L, embed_dim * self.num_quant) -> (B, embed_dim * self.num_quant, L)
         x = x.permute(0, 2, 1).contiguous()
-        # (B, num_quant * embed_dim * C, L) -> (B, C, L)
+        # (B, embed_dim * self.num_quant, L) -> (B, embed_dim, L)
         x = self.post_quant(x)
-        # (B, C, L) -> (B, L, C)
+        # (B, embed_dim, L) -> (B, L, embed_dim)
         x = x.permute(0, 2, 1).contiguous()
 
         return x
@@ -548,335 +546,3 @@ class RQBottleneck(nn.Module):
 
         return quant_recon
     
-
-class RQBottleneck_ConQuant(nn.Module):
-    """
-    Quantization bottleneck via Residual Quantization.
-
-    Arguments:
-        latent_shape (Tuple[int, int, int]): the shape of latents, denoted (H, W, C)
-        code_shape (Tuple[int, int, int]): the shape of codes, denoted (h, w, d)
-        n_embed (int, List, or Tuple): the number of embeddings (i.e., the size of codebook)
-            If isinstance(n_embed, int), the sizes of all codebooks are same.
-        shared_codebook (bool): If True, codebooks are shared in all location. If False,
-            uses separate codebooks along the ``depth'' dimension. (default: False)
-        restart_unused_codes (bool): If True, it randomly assigns a feature vector in the curruent batch
-            as the new embedding of unused codes in training. (default: True)
-    """
-
-    def __init__(self,
-                 latent_shape,
-                 embed_dim,
-                 n_embed,
-                 rq_depth,
-                 decay=0.99,
-                 shared_codebook=False,
-                 restart_unused_codes=True
-                 ):
-        super().__init__()
-
-        self.latent_shape = torch.Size(latent_shape)
-        self.embed_dim = embed_dim
-        self.rq_depth = rq_depth
-
-        self.shared_codebook = shared_codebook
-        if self.shared_codebook:
-            if isinstance(n_embed, Iterable) or isinstance(decay, Iterable):
-                raise ValueError("Shared codebooks are incompatible \
-                                    with list types of momentums or sizes: Change it into int")
-
-        self.restart_unused_codes = restart_unused_codes
-        self.n_embed = n_embed if isinstance(n_embed, Iterable) else [n_embed for _ in range(self.rq_depth)]
-        self.decay = decay if isinstance(decay, Iterable) else [decay for _ in range(self.rq_depth)]
-        assert len(self.n_embed) == self.rq_depth
-        assert len(self.decay) == self.rq_depth
-
-        if self.shared_codebook:
-            codebook0 = VQEmbedding(self.n_embed[0], 
-                                    self.embed_dim, 
-                                    decay=self.decay[0], 
-                                    restart_unused_codes=restart_unused_codes,
-                                    )
-            self.codebooks = nn.ModuleList([codebook0 for _ in range(self.rq_depth)])
-        else:
-            codebooks = [VQEmbedding(self.n_embed[idx], 
-                                     self.embed_dim, 
-                                     decay=self.decay[idx], 
-                                     restart_unused_codes=restart_unused_codes,
-                                     ) for idx in range(self.rq_depth)]
-            self.codebooks = nn.ModuleList(codebooks)
-
-        self.pre_quant = nn.Conv2d(
-            self.latent_shape[-1],
-            self.embed_dim * self.latent_shape[-1],
-            kernel_size=1
-        )
-        self.post_quant = nn.Conv2d(
-            self.embed_dim * self.latent_shape[-1],
-            self.latent_shape[-1],
-            kernel_size=1
-        )
-
-        # self.channel = BSC_channel(stochastic=False, bit_flip_prob=3.9e-6)
-        self.channel = BSC_channel(bit_flip_prob=3.9e-6)
-        self.num_bits_per_level = [(n_embed_i - 1).bit_length() for n_embed_i in self.n_embed[:self.rq_depth]]
-
-    def to_code_shape(self, x):
-        if x.ndim == 3:
-            # 输入是 (B, L, C)，其中 L = H * W
-            B, L, C = x.shape
-            H, W = self.latent_shape[0], self.latent_shape[1]
-            assert L == H * W, f"Input sequence length {L} does not match H*W ({H*W})"
-            x = x.permute(0, 2, 1).view(B, C, H, W).contiguous()
-
-        x = self.pre_quant(x)  # transform shape from [batch_size, channel, height, width] to [batch_size, embed_dim * channel, height, width]
-
-        x = torch.permute(x, (0, 2, 3, 1))  # shape [batch_size, height, width, embed_dim * channel]
-        x_flatten = torch.reshape(x, (-1, self.embed_dim))  # shape [batch_size * height * width * embed_dim * channel, embed_dim]
-
-        return x_flatten
-
-    def to_latent_shape(self, x):
-        L = x.shape[0]
-        (H, W, C) = self.latent_shape
-        B = L // (H * W * C)
-        # (B, H, W, embed_dim * C) -> (B, embed_dim * C, H, W)
-        x = x.view(B, H, W, self.embed_dim * C).permute(0, 3, 1, 2).contiguous()
-
-        # (B, C, H, W)
-        x = self.post_quant(x)
-
-        # (B, C, H, W) -> (B, H, W, C)
-        x = x.permute(0, 2, 3, 1).contiguous()
-        # (B, H*W, C)
-        x = x.view(B, H * W, C)
-
-        return x
-
-    def quantize(self, x):
-        r"""
-        Performs residual quantization on a 2D batch of vectors.
-        Shape:
-            - x: (N, embed_dim)
-            - quant_list[i]: (N, embed_dim)
-            - embed_idxs: (N, d)
-        """
-        residual_feature = x.detach().clone()
-
-        quant_list = []
-        embed_idxs_list = []
-        aggregated_quants = torch.zeros_like(x)
-        for i in range(self.rq_depth):
-            quant, embed_idx = self.codebooks[i](residual_feature)
-
-            residual_feature.sub_(quant)
-            aggregated_quants.add_(quant)
-
-            quant_list.append(aggregated_quants.clone())
-            embed_idxs_list.append(embed_idx.unsqueeze(-1))
-        
-        embed_idxs = torch.cat(embed_idxs_list, dim=-1)
-        return quant_list, embed_idxs
-
-    def forward(self, x):
-        x_reshaped = self.to_code_shape(x)
-        quant_list, embed_idxs = self.quantize(x_reshaped)
-
-        commitment_loss = self.compute_commitment_loss(x_reshaped, quant_list)
-        quants_trunc = self.to_latent_shape(quant_list[-1])
-        quants_trunc = x + (quants_trunc - x).detach()
-
-        return quants_trunc, commitment_loss, embed_idxs
-
-    def compute_commitment_loss(self, x, quant_list):
-        r"""
-        Compute the commitment loss for the residual quantization.
-        The loss is iteratively computed by aggregating quantized features.
-        """
-        loss_list1 = []
-        loss_list2 = []
-        for _, quant in enumerate(quant_list):
-            partial_loss1 = (x-quant.detach()).pow(2.0).mean()
-            loss_list1.append(partial_loss1)
-            # partial_loss2 = (x.detach()-quant).pow(2.0).mean()
-            # loss_list2.append(partial_loss2)
-
-        # commitment_loss = torch.mean(torch.stack(loss_list1)) + 0.25 * torch.mean(torch.stack(loss_list2))
-        commitment_loss = torch.mean(torch.stack(loss_list1))
-        return commitment_loss
-    
-    def ad(self, x, feat_shape=None):
-        if self.training:
-            # --- 训练路径 ---
-            x_reshaped = self.to_code_shape(x)
-            shape_info = None
-        else:
-            # --- 验证/评估路径 ---
-            if feat_shape is None:
-                raise ValueError("`feat_shape` (H_feat, W_feat) must be provided during evaluation.")
-            x_reshaped, shape_info = self._encode_dynamic_3d(x, feat_shape)
-
-        quant_list, embed_idxs = self.quantize(x_reshaped)
-
-        commitment_loss = self.compute_commitment_loss(x_reshaped, quant_list)
-
-        return x_reshaped, quant_list[-1], commitment_loss, embed_idxs, shape_info
-    
-    def da(self, quant_recon, shape_info=None):
-        if shape_info is None:
-            # --- 训练路径 ---
-            assert self.training, "shape_info is required during evaluation mode."
-            feature_dequant = self.to_latent_shape(quant_recon)
-        else:
-            # --- 验证/评估路径 ---
-            feature_dequant = self._decode_dynamic_3d(quant_recon, shape_info)
-        return feature_dequant
-    
-    def feature_pass_channel(self, embed_idxs, chan_param, noise_config=None):
-        """
-        将嵌入索引转换为比特流，通过BSC信道，再转换回索引，并重构量化矢量。
-        可以根据 noise_config 对特定层施加更强的噪声。
-
-        参数:
-            embed_idxs (torch.Tensor): 形状为 [N, rq_depth] 的码本索引。
-            chan_param (float): 用于计算基础比特错误率的信道参数 (例如 SNR in dB)。
-            noise_config (dict, optional): 指定噪声注入策略的字典。
-                例如: {'target_layer': 0, 'noise_factor': 10}
-                - 'target_layer' (int): 要施加更强噪声的层级索引。
-                - 'noise_factor' (float): 噪声增强因子，p_new = p_base * noise_factor。
-                默认为 None，表示所有层使用相同的噪声水平。
-
-        返回:
-            torch.Tensor: 重构后的量化矢量。
-        """
-        # 1. 根据SNR计算基础的比特错误概率
-        p_base = calculate_p_from_snr_db(chan_param)
-
-        noisy_idxs_list = []
-        
-        # 2. 逐层处理：转换比特 -> 施加噪声 -> 转换回索引
-        for i in range(self.rq_depth):
-            # --- a. 将当前层的索引转换为比特流 ---
-            indices_level_i = embed_idxs[:, i]
-            num_bits = self.num_bits_per_level[i]
-            binary_tensor = decimal_to_binary_rows(indices_level_i, num_bits)
-
-            # --- b. 确定当前层的噪声水平 ---
-            p_final = p_base # 默认使用基础噪声
-            
-            # 如果提供了噪声配置，并且当前层是目标层
-            if noise_config and noise_config.get('target_layer') == i:
-                noise_factor = noise_config.get('noise_factor', 1.0)
-                p_final = p_base * noise_factor
-                # 钳位操作：比特错误率p不应超过0.5
-                p_final = torch.clamp(p_final, max=0.5) 
-                # print(f"Layer {i}: Applying stronger noise. Base p: {p_base.item():.2e}, Final p: {p_final.item():.2e}")
-
-            # --- c. 将当前层的比特流独立地通过BSC信道 ---
-            channel_output = self.channel(binary_tensor, bit_flip_prob=p_final)
-            noisy_bits = channel_output['out']
-
-            # --- d. 将带噪比特转换回整数索引 ---
-            n_embed_i = self.n_embed[i]
-            noisy_indices_level_i = binary_rows_to_decimal(noisy_bits)
-            
-            # 钳位操作，防止因比特错误导致的索引越界
-            noisy_indices_level_i = torch.clamp(noisy_indices_level_i, 0, n_embed_i - 1)
-            
-            noisy_idxs_list.append(noisy_indices_level_i.unsqueeze(1))
-
-        # 3. 将各层得到的带噪索引拼接起来
-        noisy_idxs = torch.cat(noisy_idxs_list, dim=1)
-
-        # 4. 从新的（带噪）索引重构量化矢量
-        N, _ = embed_idxs.shape
-        quant_recon = torch.zeros(N, self.embed_dim, device=embed_idxs.device)
-        for i in range(self.rq_depth):
-            embeds = self.codebooks[i].embed(noisy_idxs[:, i])
-            quant_recon.add_(embeds)
-
-        return quant_recon
-    # def feature_pass_channel(self, embed_idxs, chan_param):
-    #     p_value = calculate_p_from_snr_db(chan_param)
-    #     all_bit_streams = []
-    #     # 将整数索引转换为比特流
-    #     for i in range(self.rq_depth):
-    #         indices_level_i = embed_idxs[:, i]
-    #         num_bits = self.num_bits_per_level[i]
-
-    #         binary_tensor = decimal_to_binary_rows(indices_level_i, num_bits)
-    #         all_bit_streams.append(binary_tensor)
-    #     concatenated_bits = torch.cat(all_bit_streams, dim=1)
-
-    #     # 将比特流通过BSC信道
-    #     channel_output = self.channel(concatenated_bits, bit_flip_prob=p_value)
-    #     noisy_bits = channel_output['out']
-
-    #     # 将带噪比特转换回整数索引
-    #     noisy_idxs_list = []
-    #     current_pos = 0
-    #     for i in range(self.rq_depth):
-    #         num_bits = self.num_bits_per_level[i]
-    #         n_embed_i = self.n_embed[i]
-            
-    #         bit_segment = noisy_bits[:, current_pos : current_pos + num_bits]
-    #         current_pos += num_bits
-
-    #         noisy_indices_level_i = binary_rows_to_decimal(bit_segment)
-    #         # 钳位操作，防止因比特错误导致的索引越界
-    #         noisy_indices_level_i = torch.clamp(noisy_indices_level_i, 0, n_embed_i - 1)
-            
-    #         noisy_idxs_list.append(noisy_indices_level_i.unsqueeze(1))
-
-    #     noisy_idxs = torch.cat(noisy_idxs_list, dim=1)
-
-    #     # 从新的（带噪）索引重构量化矢量
-    #     N, _ = embed_idxs.shape
-    #     quant_recon = torch.zeros(N, self.embed_dim, device=embed_idxs.device)
-    #     for i in range(self.rq_depth):
-    #         embeds = self.codebooks[i].embed(noisy_idxs[:, i])
-    #         quant_recon.add_(embeds)
-
-    #     return quant_recon
-
-    def embed(self, noisy_idxs):
-        # 4. 从新的（带噪）索引重构量化矢量
-        N, _ = noisy_idxs.shape
-        quant_recon = torch.zeros(N, self.embed_dim, device=noisy_idxs.device)
-        for i in range(self.rq_depth):
-            embeds = self.codebooks[i].embed(noisy_idxs[:, i])
-            quant_recon.add_(embeds)
-
-        return quant_recon
-
-
-
-    def _encode_dynamic_3d(self, x, feat_shape):
-        """[内部辅助函数] 动态编码，处理3D可变尺寸输入。"""
-        B, L, C = x.shape
-        H, W = feat_shape
-        assert L == H * W, f"Dynamic input sequence length {L} does not match provided H*W ({H*W})"
-        
-        # Reshape 3D -> 4D for Conv2d
-        x_4d = x.permute(0, 2, 1).view(B, C, H, W).contiguous()
-        
-        x_4d = self.pre_quant(x_4d)
-        x_4d = x_4d.permute(0, 2, 3, 1).contiguous()
-        x_flatten = x_4d.reshape(-1, self.embed_dim)
-        
-        # 保存动态维度信息
-        shape_info = (B, H, W)
-        return x_flatten, shape_info
-
-    def _decode_dynamic_3d(self, x_quantized_flat, shape_info):
-        """[内部辅助函数] 动态解码，使用shape_info恢复3D尺寸。"""
-        B, H, W = shape_info
-        C = self.latent_shape[-1] # 通道数是固定的
-
-        x_4d = x_quantized_flat.view(B, H, W, self.embed_dim * C)
-        x_4d = x_4d.permute(0, 3, 1, 2).contiguous()
-        x_4d = self.post_quant(x_4d)
-        
-        # Reshape 4D -> 3D
-        x_3d = x_4d.permute(0, 2, 3, 1).contiguous().view(B, H * W, C)
-        return x_3d
