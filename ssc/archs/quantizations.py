@@ -326,14 +326,19 @@ class RQBottleneck(nn.Module):
                  num_quant=1,
                  decay=0.99,
                  shared_codebook=False,
-                 restart_unused_codes=True
+                 restart_unused_codes=True,
+                 unembed_dim=None
                  ):
         super().__init__()
 
         self.latent_shape = torch.Size(latent_shape)
-        self.num_quant = num_quant
         self.embed_dim = embed_dim
         self.rq_depth = rq_depth
+
+        if unembed_dim is not None:
+            self.unembed_dim = unembed_dim
+        else:
+            self.unembed_dim = num_quant * self.latent_shape[-1]
 
         self.shared_codebook = shared_codebook
         if self.shared_codebook:
@@ -365,12 +370,12 @@ class RQBottleneck(nn.Module):
         # 作用于 (B, C, L) 形状的张量
         self.pre_quant = nn.Conv1d(
             in_channels=self.latent_shape[-1],
-            out_channels=self.num_quant * self.embed_dim * self.latent_shape[-1],
+            out_channels=self.unembed_dim * self.embed_dim,
             kernel_size=1,
             # groups=self.latent_shape[-1]
         )
         self.post_quant = nn.Conv1d(
-            in_channels=self.num_quant * self.embed_dim * self.latent_shape[-1],
+            in_channels=self.unembed_dim * self.embed_dim,
             out_channels=self.latent_shape[-1],
             kernel_size=1,
             # groups=self.latent_shape[-1]
@@ -394,10 +399,9 @@ class RQBottleneck(nn.Module):
 
     def to_latent_shape(self, x, B, L):
         # x 是量化器的输出, 形状为 (B * L * num_quant * C, embed_dim)
-        C = self.latent_shape[-1]
-        assert x.shape[0] == B * L * self.num_quant * C, f"Input sequence length {x.shape[0]} does not match B*L*nq*C ({B*L*self.num_quant*C})"
+        assert x.shape[0] == B * L * self.unembed_dim, f"Input sequence length {x.shape[0]} does not match B*L*C ({B*L*self.unembed_dim})"
         # (B * L * num_quant * C, embed_dim) -> (B, L, embed_dim * num_quant * C)
-        x = x.view(B, L, self.embed_dim * self.num_quant * C)
+        x = x.view(B, L, self.embed_dim * self.unembed_dim)
         # (B, L, num_quant * embed_dim * C) -> (B, num_quant * embed_dim * C, L)
         x = x.permute(0, 2, 1).contiguous()
         # (B, num_quant * embed_dim * C, L) -> (B, C, L)
