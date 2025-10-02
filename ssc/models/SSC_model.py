@@ -34,12 +34,12 @@ class SSCModel(BaseModel):
         load_path = self.opt['path'].get('pretrain_network_g', None)
         if load_path is not None:
             param_key = self.opt['path'].get('param_key_g', 'params')
-            self.load_network(self.net_g, load_path, self.opt['path'].get('strict_load_g', True), param_key)
+            self.load_network(self.net_g, load_path, self.opt['path'].get('strict_load_g', True), param_key, frozen_encoder=self.opt['network_g'].get('frozen_encoder', False))
 
         if self.is_train:
             self.init_training_settings()
 
-    def load_network(self, net, load_path, strict=True, param_key='params'):
+    def load_network(self, net, load_path, strict=True, param_key='params', frozen_encoder=False):
         """修改后的网络加载函数.
 
         此函数可以灵活加载权重，能够处理某些层（如全连接层）尺寸不匹配
@@ -109,6 +109,15 @@ class SSCModel(BaseModel):
         if unexpected_keys:
             logger.warning(f'Keys from pre-trained model not found in new model: {unexpected_keys}')
 
+        if frozen_encoder:
+            logger.info("Freezing encoder parameters as requested...")
+            # 检查网络是否真的有 encoder 这个子模块，增加代码的健壮性
+            if hasattr(net, 'encoder'):
+                for param in net.encoder.parameters():
+                    param.requires_grad = False
+                logger.info("All parameters in 'net.encoder' have been frozen.")
+            else:
+                logger.warning(f"Attempted to freeze encoder, but network '{net.__class__.__name__}' has no 'encoder' attribute.")
 
     # def load_network(self, net, load_path, strict=True, param_key='params'):
     #     """Load network.
@@ -153,7 +162,7 @@ class SSCModel(BaseModel):
             # load pretrained model
             load_path = self.opt['path'].get('pretrain_network_g', None)
             if load_path is not None:
-                self.load_network(self.net_g_ema, load_path, self.opt['path'].get('strict_load_g', True), 'params_ema')
+                self.load_network(self.net_g_ema, load_path, self.opt['path'].get('strict_load_g', True), 'params_ema', frozen_encoder=self.opt['network_g'].get('frozen_encoder', False))
             else:
                 self.model_ema(0)  # copy net_g weight
             self.net_g_ema.eval()
