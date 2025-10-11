@@ -11,7 +11,7 @@
         
       ],
       "env": {
-        "CUDA_VISIBLE_DEVICES": "4,7"
+        "CUDA_VISIBLE_DEVICES": "0"
       }
     },
     {
@@ -28,7 +28,7 @@
         "--master_port=29499",     // 选择一个未被占用的端口
         "${workspaceFolder}/ssc/train.py",
         "-opt",
-        "options/train_SSC_VQ_from_pretrain.yml",
+        "options/train_SSC_2_16_from_pretrain.yml",
         "--launcher",
         "pytorch",
         "--debug"

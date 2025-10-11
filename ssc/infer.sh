@@ -3,12 +3,12 @@
 # 如果任何命令执行失败，脚本将立即退出
 set -e
 
-export CUDA_VISIBLE_DEVICES="1"
+export CUDA_VISIBLE_DEVICES="6"
 
-CONFIG_FILE="experiments/train_SSC_CR_1_4_newSNRw16/train_SSC_1_4_from_pretrain.yml"
-MODEL_PATH="experiments/train_SSC_CR_1_4_newSNRw16/models/net_g_80000.pth"
+CONFIG_FILE="experiments/train_VQ_CR_1_8_newSNRw16/train_VQ_CR_1_8_from_pretrain.yml"
+MODEL_PATH="experiments/train_VQ_CR_1_8_newSNRw16/models/net_g_latest.pth"
 KODAK24_PATH="datasets/Kodak24"
-OUTPUT_DIR="output/test_SwinSSC_UEP_L0"
+OUTPUT_DIR="output/test_SwinSSC_VQ"
 
 
 # 构造基础命令

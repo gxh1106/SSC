@@ -1,5 +1,5 @@
 # general settings
-name: train_SSC_CR_1_4_VQ_newSNRw16
+name: train_VQ_CR_2_16
 model_type: SSCModel
 num_gpu: auto
 manual_seed: 42
@@ -42,7 +42,7 @@ network_g:
   type: SwinSSC
   args:
     model_size: small
-    C: &feature_dim 96
+    C: &feature_dim 48
     channel_type: awgn           # ['awgn', 'rayleigh']
     model: SwinJSCC_w/o_SAandRA  # ['SwinJSCC_w/o_SAandRA', 'SwinJSCC_w/_SA', 'SwinJSCC_w/_RA', 'SwinJSCC_w/_SAandRA']
     multiple_snr: !!str -2,1,4,7,10,13,16             # multiple SNRs, split by comma e.g., 1,4,7,10,13
@@ -59,7 +59,7 @@ network_g:
     restart_unused_codes: true
     latent_shape: [16, 16, *feature_dim]
     # num_quant: 2 # number of quantization for one latent
-    unembed_dim: 256 # unembed_dim = num_quant * latent_shape[-1], for num_quant is not int
+    unembed_dim: 128 # unembed_dim = num_quant * latent_shape[-1]; unembed_dim * embed_dim is the output of pre_quant
     embed_dim: 6 # dimension of embedding
     n_embed: 64  # embed num in one codebook 16
     rq_depth: 1  # RQ depth

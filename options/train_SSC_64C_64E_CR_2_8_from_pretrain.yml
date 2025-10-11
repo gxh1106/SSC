@@ -1,0 +1,148 @@
+# important parameters: frozen_encoder, lr, total_iter, C (feature_dim), embed_dim, n_embed, rq_depth
+# general settings
+name: train_SSC_64C_64E_CR_2_8
+model_type: SSCModel
+num_gpu: auto
+manual_seed: 42
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: div2k
+    type: HR_image
+    dataroot_gt: datasets/DIV2K/DIV2K_train_HR
+    # dataroot_lq: datasets/DIV2K/DIV2K_train_LR_bicubic/X2_sub
+    # meta_info_file: drct/data/meta_info/meta_info_DIV2K800sub_GT.txt
+    io_backend:
+      type: disk
+
+    gt_size: &img_value 256
+    use_hflip: true
+    use_rot: true
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 20
+    batch_size_per_gpu: 16
+    dataset_enlarge_ratio: 4
+    prefetch_mode: ~
+
+  val_1:
+    name: kodak
+    type: KodakDataset
+    dataroot_gt: ./datasets/Kodak24
+    # dataroot_lq: ./datasets/Set5/LRbicx2
+    io_backend:
+      type: disk
+    crop_divisor: 128
+
+
+# network structures
+find_unused_parameters: true
+network_g:
+  type: SwinSSC
+  # frozen_encoder: true
+  args:
+    model_size: small
+    C: &feature_dim 64
+    channel_type: awgn           # ['awgn', 'rayleigh']
+    model: SwinJSCC_w/o_SAandRA  # ['SwinJSCC_w/o_SAandRA', 'SwinJSCC_w/_SA', 'SwinJSCC_w/_RA', 'SwinJSCC_w/_SAandRA']
+    multiple_snr: !!str -2,1,4,7,10,13,16             # multiple SNRs, split by comma e.g., 1,4,7,10,13
+    distortion_metric: MSE       # ['MSE', 'MS-SSIM']
+    trainset: DIV2K
+    testset: kodak
+    training: true
+
+    pass_channel: true
+    image_dims: [3, *img_value, *img_value]
+    downsample: 4
+    norm: false
+  rq_kwargs:
+    restart_unused_codes: true
+    latent_shape: [16, 16, *feature_dim]
+    # num_quant: 2 # number of quantization for one latent
+    # unembed_dim: ~ # unembed_dim = num_quant * latent_shape[-1]; unembed_dim * embed_dim is the output of pre_quant
+    embed_dim: &de 64 # dimension of embedding
+    n_embed: *de  # embed num in one codebook 16
+    rq_depth: 4  # RQ depth
+    shared_codebook: true
+    decay: 0.99
+    # restart_unused_codes: true
+    # use_padding_idx: false
+    # masked_dropout: 0.0
+    # bottleneck_type: rq
+    # embed_dim: 96  # conv for quantization
+    # n_embed: 8  # embed num in one codebook
+    # latent_shape: # embed vector dim in codebook is latent_shape[0]*latent_shape[1] / (code_shape[0]*code_shape[1]) * latent_shape[2]
+    # - 16
+    # - 16
+    # - 96
+    # code_shape: # output of quantizer
+    # - 8
+    # - 8
+    # - 4 # quantization depth
+    # shared_codebook: true
+    # decay: 0.99
+
+# path
+path:
+  pretrain_network_g: experiments/train_VQ_64C_256E_CR_2_8/models/net_g_latest.pth
+  strict_load_g: true
+  resume_state: ~
+
+# training settings
+train:
+  ema_decay: 0.999    # set 0 to disable, 0.999 is a good value
+  optim_g:
+    type: Adam
+    lr: !!float 1e-5
+    weight_decay: 0
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [70000, 90000]  # [0.5, 0.8, 0.9, 0.95]*total_iter
+    # milestones: [250000, 400000, 450000, 475000]  # [0.5, 0.8, 0.9, 0.95]*total_iter
+    gamma: 0.5
+
+  total_iter: 100000
+  warmup_iter: -1  # no warm up
+
+  # losses
+  pixel_opt:
+    type: MSELoss
+    loss_weight: 1.0
+    reduction: mean
+  commit_loss_weight: !!float 0.25  # 0.25 for RQ-VAE
+  
+# validation settings
+val:
+  val_freq: !!float 5e3
+  save_img: true
+  pbar: False
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 2
+      test_y_channel: true
+      better: higher  # the higher, the better. Default: higher
+    ssim:
+      type: calculate_ssim
+      crop_border: 2
+      test_y_channel: true
+      better: higher  # the higher, the better. Default: higher
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500

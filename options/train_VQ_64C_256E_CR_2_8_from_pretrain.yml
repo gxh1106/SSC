@@ -1,6 +1,5 @@
-# important parameters: frozen_encoder, lr, total_iter, C (feature_dim), embed_dim, n_embed, rq_depth
 # general settings
-name: train_SSC_CR_1_8_newSNRw16
+name: train_VQ_64C_256E_CR_2_8
 model_type: SSCModel
 num_gpu: auto
 manual_seed: 42
@@ -41,10 +40,9 @@ datasets:
 find_unused_parameters: true
 network_g:
   type: SwinSSC
-  # frozen_encoder: true
   args:
     model_size: small
-    C: &feature_dim 96
+    C: &feature_dim 64
     channel_type: awgn           # ['awgn', 'rayleigh']
     model: SwinJSCC_w/o_SAandRA  # ['SwinJSCC_w/o_SAandRA', 'SwinJSCC_w/_SA', 'SwinJSCC_w/_RA', 'SwinJSCC_w/_SAandRA']
     multiple_snr: !!str -2,1,4,7,10,13,16             # multiple SNRs, split by comma e.g., 1,4,7,10,13
@@ -61,10 +59,10 @@ network_g:
     restart_unused_codes: true
     latent_shape: [16, 16, *feature_dim]
     # num_quant: 2 # number of quantization for one latent
-    # unembed_dim: ~ # unembed_dim = num_quant * latent_shape[-1], for num_quant is not int
-    embed_dim: 4 # dimension of embedding
-    n_embed: 4  # embed num in one codebook 16
-    rq_depth: 4  # RQ depth
+    unembed_dim: 192 # unembed_dim = num_quant * latent_shape[-1]; unembed_dim * embed_dim is the output of pre_quant
+    embed_dim: 21 # dimension of embedding
+    n_embed: 256  # embed num in one codebook 16
+    rq_depth: 1  # RQ depth
     shared_codebook: true
     decay: 0.99
     # restart_unused_codes: true
