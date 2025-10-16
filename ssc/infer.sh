@@ -5,10 +5,10 @@ set -e
 
 export CUDA_VISIBLE_DEVICES="6"
 
-CONFIG_FILE="experiments/train_VQ_CR_1_8_newSNRw16/train_VQ_CR_1_8_from_pretrain.yml"
-MODEL_PATH="experiments/train_VQ_CR_1_8_newSNRw16/models/net_g_latest.pth"
+CONFIG_FILE="experiments/train_SSC_96C_64E_CR_3_8/train_SSC_96C_64E_CR_3_8_from_pretrain.yml"
+MODEL_PATH="experiments/train_SSC_96C_64E_CR_3_8/models/net_g_latest.pth"
 KODAK24_PATH="datasets/Kodak24"
-OUTPUT_DIR="output/test_SwinSSC_VQ"
+OUTPUT_DIR="output/test_SwinSSC_EEP"
 
 
 # 构造基础命令

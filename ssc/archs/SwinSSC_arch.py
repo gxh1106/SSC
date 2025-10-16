@@ -93,9 +93,10 @@ class SwinSSC(nn.Module):
             # noisy_quant = self.quantizer.feature_pass_channel(embed_idxs, chan_param, noise_config=noise_config_L0)
             # noisy_quant = self.quantizer.feature_pass_channel(embed_idxs, chan_param)
 
-            # noisy_idxs = channel(embed_idxs, chan_param, idx_H) # 选择第0层采用端口索引传输
+            # noisy_idxs = channel(embed_idxs, chan_param, idx_H) # 默认选择第0层采用端口索引传输
             # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=True, ssc_idx=0) # 选择第ssc_idx层采用端口索引传输
-            noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=False)
+            # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=True, ssc_adapt=True) # 自适应索引分流
+            noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=False) # 无非均等保护，EEP方案
             noisy_quant = self.quantizer.embed(noisy_idxs)
         else:
             noisy_quant = feature_quant

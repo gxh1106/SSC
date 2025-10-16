@@ -43,11 +43,10 @@ class FA_IM_Channel(nn.Module):
         self.num_indexed_combinations = 2**self.m_index
 
         # 符号比特数
-        self.m_mod = int(math.log2(M))
-        self.num_symbol_bits = self.m_mod
+        self.m_sym = int(math.log2(M))
         
         # 每帧传输的总比特数
-        self.bits_per_frame = self.m_index + self.num_symbol_bits
+        self.bits_per_frame = self.m_index + self.m_sym
 
         # --- 3. 预计算QAM星座和所有可能的发射信号 ---
         H_pool = self._generate_mmwave_channel(Nr, N, W, L_paths, num_H, device) # Shape: (num_H, Nr, N)
@@ -195,21 +194,35 @@ class FA_IM_Channel(nn.Module):
         mask = 2**torch.arange(num_bits - 1, -1, -1, device=self.device)
         return decimal.unsqueeze(-1).bitwise_and(mask).ne(0).long()
 
-    def forward(self, embedding_indices: torch.Tensor, snr_db: float, idx_H: int = 0, ssc: bool = True, ssc_idx: int = 0) -> torch.Tensor:
+    def forward(self, embedding_indices: torch.Tensor, snr_db: float, idx_H: int = 0, ssc: bool = True, ssc_idx: int = 0, ssc_adapt: bool = False) -> torch.Tensor:
         original_shape = embedding_indices.shape
         BL, depth = original_shape
         
         # --- 1. 编码: 根据输入结构分别构建索引比特流和符号比特流 ---
         if ssc:
-            # 动态选择作为端口索引的层
-            index_source_decimal = embedding_indices[:, ssc_idx]
-            symbol_layer_indices = [i for i in range(depth) if i != ssc_idx]
-            symbol_source_decimal = embedding_indices[:, symbol_layer_indices]
+            if ssc_adapt:
+                # --- [方案 C: ssc=True, ssc_adapt=True, 自适应比例分割] ---
+                # 目标是沿着 BL 方向（按列）展开，所以需要先转置，再确保内存连续，最后展平
+                # (BL, depth) -> (depth, BL) -> contiguous memory -> (depth * BL)
+                all_indices_flat = embedding_indices.transpose(0, 1).contiguous().view(-1)
+                total_indices = all_indices_flat.shape[0]
+                # 根据 m_index 和 m_sym 的比例来决定分割点
+                # 这个比例决定了总信息中有多少应该通过更可靠的端口索引传输
+                split_point = int(total_indices * self.m_index / (self.m_index + self.m_sym))
+                # 分割成两路十进制索引流
+                index_source_decimal = all_indices_flat[:split_point]
+                symbol_source_decimal = all_indices_flat[split_point:]
+            else:
+                # --- [方案 A: ssc=True, ssc_adapt=False, 按特定层分割] ---
+                # 动态选择作为端口索引的层
+                index_source_decimal = embedding_indices[:, ssc_idx]
+                symbol_layer_indices = [i for i in range(depth) if i != ssc_idx]
+                symbol_source_decimal = embedding_indices[:, symbol_layer_indices]
 
-            # index_source_decimal = embedding_indices[:, 0]       # Shape: (L,)
-            # symbol_source_decimal = embedding_indices[:, 1:]     # Shape: (L, depth-1)
-            # index_source_decimal = embedding_indices[:, depth-1]       # Shape: (L,)
-            # symbol_source_decimal = embedding_indices[:, 0:depth-1]     # Shape: (L, depth-1)
+                # index_source_decimal = embedding_indices[:, 0]       # Shape: (L,)
+                # symbol_source_decimal = embedding_indices[:, 1:]     # Shape: (L, depth-1)
+                # index_source_decimal = embedding_indices[:, depth-1]       # Shape: (L,)
+                # symbol_source_decimal = embedding_indices[:, 0:depth-1]     # Shape: (L, depth-1)
         
             # 将十进制索引转换为比特流
             index_bit_stream = self._decimal_to_bits(index_source_decimal, self.bits_per_input_index).view(-1)
@@ -224,11 +237,11 @@ class FA_IM_Channel(nn.Module):
             index_bits = index_bit_stream.view(-1, self.m_index)
 
             # 对符号比特流进行补零和分帧
-            remainder_sym = symbol_bit_stream.shape[0] % self.m_mod
+            remainder_sym = symbol_bit_stream.shape[0] % self.m_sym
             if remainder_sym != 0:
-                padding_sym = torch.zeros(self.m_mod - remainder_sym, dtype=torch.uint8, device=self.device)
+                padding_sym = torch.zeros(self.m_sym - remainder_sym, dtype=torch.uint8, device=self.device)
                 symbol_bit_stream = torch.cat([symbol_bit_stream, padding_sym])
-            symbol_bits = symbol_bit_stream.view(-1, self.m_mod)
+            symbol_bits = symbol_bit_stream.view(-1, self.m_sym)
 
             # 确保帧数匹配（以较长的为准，短的补全）
             num_frames = max(index_bits.shape[0], symbol_bits.shape[0])
@@ -320,25 +333,55 @@ class FA_IM_Channel(nn.Module):
         decoded_symbol_indices = torch.remainder(decoded_flat_indices, self.M)
         
         if ssc:
-            # --- [方案 A: ssc=True, 非均等保护 (UEP) 重建] ---
-            decoded_index_bits = self._decimal_to_bits(decoded_port_indices, self.m_index).view(-1)
-            decoded_symbol_bits = self._decimal_to_bits(decoded_symbol_indices, self.m_mod).view(-1)
-            
-            # 截断，移除补零位
-            original_idx_bits_len = BL * self.bits_per_input_index
-            original_sym_bits_len = BL * (depth - 1) * self.bits_per_input_index
-            
-            clean_index_bits = decoded_index_bits[:original_idx_bits_len]
-            clean_symbol_bits = decoded_symbol_bits[:original_sym_bits_len]
-            
-            # 将比特流恢复为十进制索引
-            output_indices = torch.zeros(original_shape, dtype=torch.long, device=self.device)
-            output_indices[:, ssc_idx] = self._bits_to_decimal(clean_index_bits.view(BL, self.bits_per_input_index))
-            output_indices[:, symbol_layer_indices] = self._bits_to_decimal(clean_symbol_bits.view(BL, depth - 1, self.bits_per_input_index))
+            if ssc_adapt:
+                # --- [方案 C: ssc=True, ssc_adapt=True, 自适应比例分割重建] ---
+                # 1. 从帧索引恢复比特流 (包含 padding)
+                decoded_index_bits = self._decimal_to_bits(decoded_port_indices, self.m_index).view(-1)
+                decoded_symbol_bits = self._decimal_to_bits(decoded_symbol_indices, self.m_sym).view(-1)
+                
+                original_idx_indices_len = split_point
+                original_sym_indices_len = total_indices - split_point
+
+                original_idx_bits_len = original_idx_indices_len * self.bits_per_input_index
+                original_sym_bits_len = original_sym_indices_len * self.bits_per_input_index
+
+                clean_index_bits = decoded_index_bits[:original_idx_bits_len]
+                clean_symbol_bits = decoded_symbol_bits[:original_sym_bits_len]
+
+                # 3. 将干净的比特流恢复为十进制索引
+                decoded_index_source_decimal = self._bits_to_decimal(clean_index_bits.view(-1, self.bits_per_input_index))
+                decoded_symbol_source_decimal = self._bits_to_decimal(clean_symbol_bits.view(-1, self.bits_per_input_index))
+
+                # 4. 重建在编码器中被分割的那个展平的十进制索引流
+                reconstructed_flat_indices = torch.cat([decoded_index_source_decimal, decoded_symbol_source_decimal])
+                
+                # 5. 关键的逆向操作：恢复原始形状
+                #    编码器操作: transpose(0, 1).contiguous().view(-1)  (从 (BL, depth) 到列优先的 1D)
+                #    解码器逆操作: view(depth, BL).transpose(0, 1)        (从列优先的 1D 回到 (BL, depth))
+                output_indices = reconstructed_flat_indices.view(depth, BL).transpose(0, 1).contiguous()
+
+            else:
+                # --- [方案 A: ssc=True, ssc_adapt=False, 按特定层分割重建] ---
+                decoded_index_bits = self._decimal_to_bits(decoded_port_indices, self.m_index).view(-1)
+                decoded_symbol_bits = self._decimal_to_bits(decoded_symbol_indices, self.m_sym).view(-1)
+                
+                # 截断，移除补零位
+                # 假设 ssc_idx 层用于索引流，其余 depth-1 层用于符号流
+                symbol_layer_indices = [i for i in range(depth) if i != ssc_idx]
+                original_idx_bits_len = BL * self.bits_per_input_index
+                original_sym_bits_len = BL * (depth - 1) * self.bits_per_input_index
+                
+                clean_index_bits = decoded_index_bits[:original_idx_bits_len]
+                clean_symbol_bits = decoded_symbol_bits[:original_sym_bits_len]
+                
+                # 将比特流恢复为十进制索引
+                output_indices = torch.zeros(original_shape, dtype=torch.long, device=self.device)
+                output_indices[:, ssc_idx] = self._bits_to_decimal(clean_index_bits.view(BL, self.bits_per_input_index))
+                output_indices[:, symbol_layer_indices] = self._bits_to_decimal(clean_symbol_bits.view(BL, depth - 1, self.bits_per_input_index))
         else:
             # --- [方案 B: ssc=False, 均等保护 (EEP) 重建] ---
             decoded_index_bits = self._decimal_to_bits(decoded_port_indices, self.m_index)
-            decoded_symbol_bits = self._decimal_to_bits(decoded_symbol_indices, self.m_mod)
+            decoded_symbol_bits = self._decimal_to_bits(decoded_symbol_indices, self.m_sym)
             # decoded_padded_stream = torch.cat([decoded_index_bits, decoded_symbol_bits], dim=1).view(-1)
 
             flat_index_bits = decoded_index_bits.view(-1)
@@ -376,11 +419,10 @@ class FA_SISO_Channel(nn.Module):
         self.bits_per_input_index = int(math.log2(codebook_size))
 
         # 符号比特数
-        self.m_mod = int(math.log2(M))
-        self.num_symbol_bits = self.m_mod
+        self.m_sym = int(math.log2(M))
         
         # 每帧传输的总比特数
-        self.bits_per_frame = self.num_symbol_bits
+        self.bits_per_frame = self.m_sym
 
         # --- 3. 预计算QAM星座和所有可能的发射信号 ---
         H_pool = self._generate_mmwave_channel(Nr, N, W, L_paths, num_H, device) # Shape: (num_H, Nr, N)
@@ -506,7 +548,7 @@ class FA_SISO_Channel(nn.Module):
         num_frames = padded_bit_stream.shape[0] // self.bits_per_frame
         if num_frames == 0: return torch.zeros_like(embedding_indices)
         
-        symbol_bits = padded_bit_stream.view(num_frames, self.m_mod)
+        symbol_bits = padded_bit_stream.view(num_frames, self.m_sym)
         symbol_indices = self._bits_to_decimal(symbol_bits)
 
         # --- 3. 传输 y = h*s + n ---
@@ -532,7 +574,7 @@ class FA_SISO_Channel(nn.Module):
         decoded_symbol_indices = torch.cat(decoded_symbol_indices_list, dim=0)
 
         # --- 5. 重建 ---
-        decoded_padded_stream = self._decimal_to_bits(decoded_symbol_indices, self.m_mod).view(-1)
+        decoded_padded_stream = self._decimal_to_bits(decoded_symbol_indices, self.m_sym).view(-1)
         decoded_bit_stream = decoded_padded_stream[:original_total_bits]
         
         bit_groups = decoded_bit_stream.view(BL, depth, self.bits_per_input_index)

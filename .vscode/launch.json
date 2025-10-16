@@ -46,17 +46,17 @@
       "console": "integratedTerminal",
       "args": [
         "--config",
-        "experiments/train_SSC_CR_1_8_VQ_newSNRw16/train_SSC_VQ_from_pretrain.yml",
+        "experiments/train_SSC_96C_64E_CR_3_8/train_SSC_96C_64E_CR_3_8_from_pretrain.yml",
         "--model_path",
-        "experiments/train_SSC_CR_1_8_VQ_newSNRw16/models/net_g_latest.pth",
+        "experiments/train_SSC_96C_64E_CR_3_8/models/net_g_latest.pth",
         "--input",
         "datasets/Kodak24",
         "--output",
-        "output/test_SwinSSC_VQ"
+        "output/test_SwinSSC_UEP_Adapt"
       ],
       "env": {
         // 如果需要，可以在这里设置环境变量
-        "CUDA_VISIBLE_DEVICES": "1"
+        "CUDA_VISIBLE_DEVICES": "6"
       }
     }
   ]

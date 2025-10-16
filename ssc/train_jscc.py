@@ -3,6 +3,7 @@ import logging
 import math
 import time
 import torch
+import torch.distributed as dist
 from os import path as osp
 
 import torch.nn as nn
@@ -254,7 +255,7 @@ def train_pipeline(root_path):
     # end of epoch
 
     consumed_time = str(datetime.timedelta(seconds=int(time.time() - start_time)))
-    logger.info(f'End of training. Time consumed: {consumed_time}')
+    logger.info(f'End of training task: {opt["name"]}. Time consumed: {consumed_time}')
     logger.info('Save the latest model.')
     model.save(epoch=-1, current_iter=-1)  # -1 stands for the latest
     if opt.get('val') is not None:
@@ -267,3 +268,6 @@ def train_pipeline(root_path):
 if __name__ == '__main__':
     root_path = osp.abspath(osp.join(__file__, osp.pardir, osp.pardir))
     train_pipeline(root_path)
+
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
