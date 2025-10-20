@@ -23,7 +23,20 @@ class SwinSSC(nn.Module):
 
         self.quantizer = RQBottleneck(**rq_kwargs)
 
+    def freeze_endec(self):
+        """Freezing encoder and decoder parameters."""
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+        for param in self.decoder.parameters():
+            param.requires_grad = False
 
+    def unfreeze_endec(self):
+        """Unfreezing encoder and decoder parameters"""
+        for param in self.encoder.parameters():
+            param.requires_grad = True
+        for param in self.decoder.parameters():
+            param.requires_grad = True
+            
     def forward(self, input_image, given_SNR=None):
         B, _, H, W = input_image.shape
 

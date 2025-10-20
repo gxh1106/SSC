@@ -34,12 +34,12 @@ class SSCModel(BaseModel):
         load_path = self.opt['path'].get('pretrain_network_g', None)
         if load_path is not None:
             param_key = self.opt['path'].get('param_key_g', 'params')
-            self.load_network(self.net_g, load_path, self.opt['path'].get('strict_load_g', True), param_key, frozen_encoder=self.opt['network_g'].get('frozen_encoder', False))
+            self.load_network(self.net_g, load_path, self.opt['path'].get('strict_load_g', True), param_key)
 
         if self.is_train:
             self.init_training_settings()
 
-    def load_network(self, net, load_path, strict=True, param_key='params', frozen_encoder=False):
+    def load_network(self, net, load_path, strict=True, param_key='params'):
         """修改后的网络加载函数.
 
         此函数可以灵活加载权重，能够处理某些层（如全连接层）尺寸不匹配
@@ -109,47 +109,11 @@ class SSCModel(BaseModel):
         if unexpected_keys:
             logger.warning(f'Keys from pre-trained model not found in new model: {unexpected_keys}')
 
-        if frozen_encoder:
-            logger.info("Freezing encoder parameters as requested...")
-            # 检查网络是否真的有 encoder 这个子模块，增加代码的健壮性
-            if hasattr(net, 'encoder'):
-                for param in net.encoder.parameters():
-                    param.requires_grad = False
-                logger.info("All parameters in 'net.encoder' have been frozen.")
-            else:
-                logger.warning(f"Attempted to freeze encoder, but network '{net.__class__.__name__}' has no 'encoder' attribute.")
-
-    # def load_network(self, net, load_path, strict=True, param_key='params'):
-    #     """Load network.
-
-    #     Args:
-    #         load_path (str): The path of networks to be loaded.
-    #         net (nn.Module): Network.
-    #         strict (bool): Whether strictly loaded.
-    #         param_key (str): The parameter key of loaded network. If set to
-    #             None, use the root 'path'.
-    #             Default: 'params'.
-    #     """
-    #     logger = get_root_logger()
-    #     net = self.get_bare_model(net)
-    #     load_net = torch.load(load_path, map_location=lambda storage, loc: storage)
-    #     if param_key is not None:
-    #         if param_key not in load_net and 'params' in load_net:
-    #             param_key = 'params'
-    #             logger.info('Loading: params_ema does not exist, use params.')
-    #         load_net = load_net[param_key]
-    #     logger.info(f'Loading {net.__class__.__name__} model from {load_path}, with param key: [{param_key}].')
-    #     # remove unnecessary 'module.'
-    #     for k, v in deepcopy(load_net).items():
-    #         if k.startswith('module.'):
-    #             load_net[k[7:]] = v
-    #             load_net.pop(k)
-    #     self._print_different_keys_loading(net, load_net, strict)
-    #     net.load_state_dict(load_net, strict=strict)
-
     def init_training_settings(self):
         self.net_g.train()
         train_opt = self.opt['train']
+
+        load_path = self.opt['path'].get('pretrain_network_g', None)
 
         self.ema_decay = train_opt.get('ema_decay', 0)
         if self.ema_decay > 0:
@@ -160,12 +124,26 @@ class SSCModel(BaseModel):
             # There is no need to wrap with DistributedDataParallel
             self.net_g_ema = build_network(self.opt['network_g']).to(self.device)
             # load pretrained model
-            load_path = self.opt['path'].get('pretrain_network_g', None)
             if load_path is not None:
-                self.load_network(self.net_g_ema, load_path, self.opt['path'].get('strict_load_g', True), 'params_ema', frozen_encoder=self.opt['network_g'].get('frozen_encoder', False))
+                self.load_network(self.net_g_ema, load_path, self.opt['path'].get('strict_load_g', True), 'params_ema')
             else:
                 self.model_ema(0)  # copy net_g weight
             self.net_g_ema.eval()
+
+        self.unfreeze_iter = train_opt.get('unfreeze_iter', None)
+        self.is_frozen = False
+        if load_path is not None and self.unfreeze_iter is not None:
+            logger = get_root_logger()
+            logger.info(f"Two-stage training enabled. Encoder and decoder will be unfrozen at iteration {self.unfreeze_iter}.")
+            # 冻结主模型
+            self.get_bare_model(self.net_g).freeze_endec()
+            # ### ADDED FOR EMA ###:
+            if self.ema_decay > 0:
+                logger.info("Also freezing encoder and decoder for the EMA model.")
+                self.get_bare_model(self.net_g_ema).freeze_endec()
+            self.is_frozen = True
+        else:
+            logger.info("Training all parameters.")
 
         # define losses
         if train_opt.get('pixel_opt'):
@@ -200,10 +178,43 @@ class SSCModel(BaseModel):
         self.optimizer_g = self.get_optimizer(optim_type, optim_params, **train_opt['optim_g'])
         self.optimizers.append(self.optimizer_g)
 
+    def _unfreeze_and_update_optimizer(self):
+        """解冻 encoder/decoder 并将其参数添加到优化器中，同时处理EMA模型。"""
+        logger = get_root_logger()
+        
+        # 1. 解冻主模型参数
+        net_g_bare = self.get_bare_model(self.net_g)
+        net_g_bare.unfreeze_endec()
+        
+        # ### ADDED FOR EMA ###: 如果存在EMA模型，也解冻它
+        if self.ema_decay > 0:
+            logger.info("Also unfreezing encoder and decoder for the EMA model.")
+            self.get_bare_model(self.net_g_ema).unfreeze_endec()
+
+        # 2. 收集新解冻的参数
+        unfrozen_params = [
+            v for k, v in net_g_bare.named_parameters() 
+            if v.requires_grad and ('encoder.' in k or 'decoder.' in k)
+        ]
+        
+        # 3. 将参数添加到优化器
+        if unfrozen_params:
+            logger.info(f"Adding {len(unfrozen_params)} unfrozen parameters to the optimizer.")
+            self.optimizer_g.add_param_group({'params': unfrozen_params})
+        
+        # 4. 更新状态
+        self.is_frozen = False
+
+    def get_current_learning_rate(self):
+        return [self.optimizers[0].param_groups[0]['lr']]
+    
     def feed_data(self, data):
         self.input = data['gt'].to(self.device)
 
     def optimize_parameters(self, current_iter):
+        if self.is_frozen and current_iter > self.unfreeze_iter:
+            self._unfreeze_and_update_optimizer()
+            
         self.optimizer_g.zero_grad()
         self.output, CBR, chan_param, loss_commit, embed_idxs = self.net_g(self.input)
 
