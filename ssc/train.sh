@@ -3,8 +3,8 @@
 # export CUDA_VISIBLE_DEVICES="4,5,6,7"
 # NPROC_PER_NODE=4
 
-# export CUDA_VISIBLE_DEVICES="3,7"
-export CUDA_VISIBLE_DEVICES="1,2"
+# export CUDA_VISIBLE_DEVICES="5,6"
+export CUDA_VISIBLE_DEVICES="3,4"
 NPROC_PER_NODE=2
 
 # export CUDA_VISIBLE_DEVICES="5"
@@ -16,7 +16,8 @@ MASTER_PORT=29501
 
 SCRIPT_PATH="ssc/train.py"
 # OPTIONS_PATH="options/16xD/train_SSC_96C_16E_4D_stage2_from_pretrain.yml"
-OPTIONS_PATH="options/Ke/train_SSC_96C_16E_4D_Ke3_from_pretrain.yml"
+OPTIONS_PATH="options/Ke/train_SSC_96C_16E_4D_Ke16_from_pretrain.yml"
+# Ke2
 # OPTIONS_PATH="options/16xD/train_SSC_96C_16E_CR_2_8_from_pretrain.yml"
 
 

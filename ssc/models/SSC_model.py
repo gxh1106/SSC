@@ -205,6 +205,20 @@ class SSCModel(BaseModel):
         # 4. 更新状态
         self.is_frozen = False
 
+    def resume_training(self, resume_state):
+        # 检查保存的状态中的迭代次数是否已经超过了解冻点。
+        # 如果是，我们需要在加载优化器状态前，手动解冻并更新优化器，
+        # 从而确保参数组数量匹配。
+        if (hasattr(self, 'is_frozen') and self.is_frozen 
+            and resume_state['iter'] > self.unfreeze_iter):
+
+            # 调用我们之前写的辅助函数，将优化器调整为拥有2个参数组的状态
+            self._unfreeze_and_update_optimizer()
+
+        # 在确保优化器结构正确后，调用父类的原始 resume_training 方法来完成剩下的所有工作
+        # (加载优化器状态、调度器状态、epoch 和 iter 等)
+        super(SSCModel, self).resume_training(resume_state)
+
     def get_current_learning_rate(self):
         return [self.optimizers[0].param_groups[0]['lr']]
     
