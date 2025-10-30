@@ -25,7 +25,9 @@ class SwinSSC(nn.Module):
 
     def freeze_endec(self):
         """Freezing encoder and decoder parameters."""
-        for param in self.encoder.parameters():
+        for name, param in self.encoder.named_parameters():
+            # if 'head_list' in name:
+            #     continue
             param.requires_grad = False
         for param in self.decoder.parameters():
             param.requires_grad = False
@@ -71,6 +73,8 @@ class SwinSSC(nn.Module):
         noisy_quant = x_reshaped + (noisy_quant - x_reshaped).detach()
         feature_dequant = self.quantizer.da(noisy_quant, shape_info)
 
+        # loss_commit += (feature_dequant - feature).pow(2.0).mean()
+
         recon_image = self.decoder(feature_dequant, chan_param, self.model)
 
         return recon_image, CBR, chan_param, loss_commit, embed_idxs
@@ -102,15 +106,16 @@ class SwinSSC(nn.Module):
         x_reshaped, feature_quant, loss_commit, embed_idxs, shape_info = self.quantizer.ad(feature, feat_shape=feat_shape)
 
         if self.pass_channel:
-            noise_config_L0 = {'target_layer': 0, 'noise_factor': 10000} # L0层加100倍的噪声
-            # noisy_quant = self.quantizer.feature_pass_channel(embed_idxs, chan_param, noise_config=noise_config_L0)
+            error_config = {'target_layer': idx_H, 'noise_factor': 10000} # L0层加100倍的噪声
+            # noisy_quant = self.quantizer.feature_pass_channel(embed_idxs, chan_param, noise_config=error_config)
             # noisy_quant = self.quantizer.feature_pass_channel(embed_idxs, chan_param)
+            noisy_quant = self.quantizer.feature_pass_error(embed_idxs, chan_param, noise_config=error_config)
 
             # noisy_idxs = channel(embed_idxs, chan_param, idx_H) # 默认选择第0层采用端口索引传输
             # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=True, ssc_idx=0) # 选择第ssc_idx层采用端口索引传输
             # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=True, ssc_adapt=True) # 自适应索引分流
-            noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=False) # 无非均等保护，EEP方案
-            noisy_quant = self.quantizer.embed(noisy_idxs)
+            # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=False) # 无非均等保护，EEP方案
+            # noisy_quant = self.quantizer.embed(noisy_idxs)
         else:
             noisy_quant = feature_quant
 

@@ -230,10 +230,11 @@ class SSCModel(BaseModel):
             self._unfreeze_and_update_optimizer()
             
         self.optimizer_g.zero_grad()
-        self.output, CBR, chan_param, loss_commit, embed_idxs = self.net_g(self.input)
+        self.output, CBR, chan_param, l_commit, embed_idxs = self.net_g(self.input)
 
-        l_total = self.commit_loss_weight * loss_commit
+        l_total = self.commit_loss_weight * l_commit
         loss_dict = OrderedDict()
+        loss_dict['l_commit'] = l_commit
         # pixel loss
         if self.cri_pix:
             l_pix = self.cri_pix(self.output, self.input)

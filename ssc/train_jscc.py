@@ -263,11 +263,16 @@ def train_pipeline(root_path):
             model.validation(val_loader, current_iter, tb_logger, opt['val']['save_img'])
     if tb_logger:
         tb_logger.close()
+    
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == '__main__':
     root_path = osp.abspath(osp.join(__file__, osp.pardir, osp.pardir))
-    train_pipeline(root_path)
-
-    if dist.is_available() and dist.is_initialized():
-        dist.destroy_process_group()
+    try:
+        train_pipeline(root_path)
+    finally:
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
+    
