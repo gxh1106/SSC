@@ -68,7 +68,7 @@ network_g:
     latent_shape: [16, 16, *feature_dim]
     embed_dim: 4 # dimension of embedding
     n_embed: 16  # embed num in one codebook
-    rq_depth: 4  # RQ depth
+    rq_depth: 5  # RQ depth
     shared_codebook: true
     decay: 0.99
     # restart_unused_codes: true

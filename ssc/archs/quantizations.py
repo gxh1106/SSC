@@ -166,13 +166,10 @@ class VQEmbedding(nn.Embedding):
             
             # 在当前块内寻找最小距离及其相对索引
             chunk_min_distances, chunk_embed_idxs = distances_chunk.min(dim=1)
-            
             # 确定哪些向量在当前块中找到了更近的码字
             update_mask = chunk_min_distances < min_distances
-            
             # 更新全局最小距离
             min_distances[update_mask] = chunk_min_distances[update_mask]
-            
             # 更新全局索引，注意要加上块的偏移量 i
             embed_idxs[update_mask] = chunk_embed_idxs[update_mask] + i
                 

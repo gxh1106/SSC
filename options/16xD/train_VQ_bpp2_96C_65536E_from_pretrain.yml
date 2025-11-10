@@ -1,6 +1,6 @@
 # important parameters: frozen_encoder, lr, total_iter, C (feature_dim), embed_dim, n_embed, rq_depth
 # general settings
-name: train_VQ_CR_2_8_96C_65536E_4D
+name: train_VQ_bpp2_96C_65536E
 model_type: SSCModel
 num_gpu: auto
 manual_seed: 42
@@ -105,7 +105,7 @@ train:
     # milestones: [250000, 400000, 450000, 475000]  # [0.5, 0.8, 0.9, 0.95]*total_iter
     gamma: 0.5
 
-  unfreeze_iter: 100000  # unfreeze encoder and decoder at this iter, if load_path is not None and unfreeze_iter is not None, freeze
+  # unfreeze_iter: 100000  # unfreeze encoder and decoder at this iter, if load_path is not None and unfreeze_iter is not None, freeze
   total_iter: 200000
   warmup_iter: -1  # no warm up
 
