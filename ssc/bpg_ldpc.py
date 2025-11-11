@@ -108,10 +108,10 @@ def ldpc_encode_file(input_path, output_path, k, rate=0.5):
 
 def main():
     # --- 用户配置 ---
-    KODAK_DIR = os.path.expanduser('~/kodak_dataset') # Kodak数据集路径
-    BPG_OUTPUT_DIR = 'bpg_output'                     # BPG文件输出目录
-    LDPC_OUTPUT_DIR = 'ldpc_output'                   # LDPC编码文件输出目录
-    
+    KODAK_DIR = './datasets/Kodak24' # Kodak数据集路径
+    BPG_OUTPUT_DIR = './output/bpg_output'                     # BPG文件输出目录
+    LDPC_OUTPUT_DIR = './output/ldpc_output'                   # LDPC编码文件输出目录
+
     BPG_QP = 28          # BPG量化参数
     LDPC_BLOCK_SIZE = 1024 # LDPC信息块大小 (k)
     LDPC_RATE = 0.5      # LDPC码率 (R)
