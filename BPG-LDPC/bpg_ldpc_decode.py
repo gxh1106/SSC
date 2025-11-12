@@ -2,6 +2,7 @@ import numpy as np
 import pyldpc
 import time
 import os
+import sys
 import subprocess
 import torch
 import torch.nn.functional as F
@@ -9,39 +10,45 @@ from scipy.io import loadmat
 from PIL import Image
 from torchvision.transforms.functional import to_tensor
 import matplotlib.pyplot as plt
+import multiprocessing # 1. 导入并行处理库
 
-from faim import FA_IM_Channel
+from faim_bpg import FA_IM_Channel
+
+# import warnings
+# from pyldpc.decoder import UserWarning
+# # 忽略来自 pyldpc.decoder 的特定 UserWarning
+# warnings.filterwarnings("ignore", category=UserWarning, module="pyldpc.decoder")
 
 # ==============================================================================
-# 配置参数 (与编码器脚本匹配)
+# 配置参数 (已使用os.path.join实现跨平台)
 # ==============================================================================
-# --- 目标码率 ---
+os.environ["CUDA_VISIBLE_DEVICES"] = "5,6"
+
 TARGET_BPP = 1.0
 bpp_suffix = f"_bpp{TARGET_BPP}"
-# --- LDPC 参数 ---
-n_ldpc = 50   # LDPC 码长 (Codeword length)
-d_v = 3       # 变量节点度 (Variable node degree)
-d_c = 5       # 校验节点度 (Check node degree)
-MAX_LDPC_ITER = 50 # LDPC解码器最大迭代次数
+n_ldpc = 50
+d_v = 3
+d_c = 5
+MAX_LDPC_ITER = 50
 
-# --- BPG 可执行文件路径 ---
-BPGDEC_PATH = '.\\bpgdec' # 根据您的bpgdec.exe位置进行修改
-# --- 路径设置 ---
-root_dir = '.\\Kodak24\\original_data\\'                          # 原始图片路径 (用于对比)
-ldpc_encoded_dir = f'.\\Kodak24\\ldpc_encoded{bpp_suffix}\\'      # 存储.mat文件的路径
-bpg_encoded_dir = f'.\\Kodak24\\bpg_encoded{bpp_suffix}\\'       # BPG编码结果 (用于获取原始长度)
-decoded_output_dir = f'.\\Kodak24\\decoded_images{bpp_suffix}\\'  # 存储解码后图片的路径
-results_dir = f'.\\Kodak24\\results{bpp_suffix}\\' # 存储CSV和图表的新目录
+BASE_DIR = './BPG-LDPC' 
+DATA_DIR = 'Kodak24'
+BPGDEC_EXECUTABLE = os.path.join(BASE_DIR, 'bpgdec.exe')
+ROOT_DIR = os.path.join(BASE_DIR, DATA_DIR, 'original_data')
+LDPC_ENCODED_DIR = os.path.join(BASE_DIR, DATA_DIR, f'ldpc_encoded{bpp_suffix}')
+BPG_ENCODED_DIR = os.path.join(BASE_DIR, DATA_DIR, f'bpg_encoded{bpp_suffix}')
+# DECODED_OUTPUT_DIR = os.path.join(BASE_DIR, DATA_DIR, f'decoded_images{bpp_suffix}')
+RESULTS_DIR = os.path.join(BASE_DIR, DATA_DIR, f'results{bpp_suffix}')
 
 # --- 模拟参数 ---
-# 要测试的信噪比范围 (dB)
 SNR_INTERVAL = 2
-SNR_START = 0
+SNR_START = 18
 SNR_END = 20 + SNR_INTERVAL
 SNR_range = np.arange(SNR_START, SNR_END, SNR_INTERVAL)
 
 # --- FA-IM 信道参数 ---
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = "cpu"
 FA_IM_K = 4           # 活动端口的数量 (必须是2的幂)
 FA_IM_N = 16          # 可用的总端口数量
 FA_IM_Nr = 8          # 接收天线的数量
@@ -51,7 +58,7 @@ FA_IM_W = 2.0         # 发射端流体天线的总宽度 (米)
 FA_IM_L_PATHS = 10    # 多径信道的路径数量
 
 # ==============================================================================
-# 提供的图像质量评估函数
+# 辅助函数
 # ==============================================================================
 def calculate_psnr(img1, img2, max_val=1.0):
     """计算两张图的PSNR值"""
@@ -125,175 +132,233 @@ def calculate_ms_ssim(X, Y, window, data_range: float, weights, use_padding: boo
     ms_ssim_val = torch.prod(vals[:-1] ** weights[:-1] * vals[-1:] ** weights[-1:], dim=0)
     return ms_ssim_val.mean()
 
+def execute_command(command_list):
+    """安全、跨平台地执行外部命令。"""
+    is_windows = sys.platform == "win32"
+    if not is_windows:
+        command_list.insert(0, "wine")
+        # command_list.insert(0, "xvfb-run")
+
+    my_env = os.environ.copy()
+    if not is_windows: my_env["WINEDEBUG"] = "fixme-all,err-all"
+    try:
+        subprocess.run(command_list, env=my_env, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f"命令执行失败: {' '.join(command_list)}\n错误信息:\n{e.stderr}")
+        raise
 
 # ==============================================================================
-# 主程序
+# 2. 并行任务函数
 # ==============================================================================
-
-# --- 初始化LDPC码 (必须与编码器一致) ---
-# H, G = pyldpc.make_ldpc(n_ldpc, d_v, d_c, systematic=True, sparse=True)
-matrix_load_path = f'.\\Kodak24\\ldpc_encoded{bpp_suffix}\\ldpc_matrices.npz'
-if not os.path.exists(matrix_load_path):
-    raise FileNotFoundError(f"LDPC matrix file not found at {matrix_load_path}. Please run the encoder first.")
-matrices = np.load(matrix_load_path)
-H = matrices['H'].astype(np.int32)
-G = matrices['G'].astype(np.int32)
-
-k_ldpc = G.shape[1]
-n_actual_ldpc = G.shape[0]
-
-
-
-# --- 初始化 MS-SSIM 所需的组件 ---
-ms_ssim_window = create_window(11, 3).to(DEVICE)
-ms_ssim_weights = torch.tensor([0.0448, 0.2856, 0.3001, 0.2363, 0.1333], device=DEVICE)
-
-# --- 创建输出目录 ---
-if not os.path.exists(decoded_output_dir):
-    os.makedirs(decoded_output_dir)
-os.makedirs(results_dir, exist_ok=True)
-
-# --- 初始化信道 ---
-channel = FA_IM_Channel(
-    K=FA_IM_K, N=FA_IM_N, Nr=FA_IM_Nr, M=FA_IM_M,
-    num_H=FA_IM_NUM_H, W=FA_IM_W, L_paths=FA_IM_L_PATHS, device=DEVICE
-)
-
-
-psnr_results = {snr: [] for snr in SNR_range}
-ms_ssim_results = {snr: [] for snr in SNR_range}
-
-mat_files = [f for f in os.listdir(ldpc_encoded_dir) if f.lower().endswith('.mat')]
-total_images = len(mat_files)
-
-# --- 遍历所有编码文件进行解码和评估 ---
-for idx, mat_filename in enumerate(mat_files):
-    image_base_name = mat_filename.split('.')[0]
-    print(f"\n[{idx+1}/{total_images}] Processing: {image_base_name}")
-
-    # 加载原始图像和编码数据
-    original_image_path = os.path.join(root_dir, image_base_name + '.png')
-    original_img = Image.open(original_image_path).convert('RGB')
-    original_tensor = to_tensor(original_img).unsqueeze(0).to(DEVICE)
-
-    mat_path = os.path.join(ldpc_encoded_dir, mat_filename)
-    encoded_data = loadmat(mat_path)
-    encoded_bits_tensor = torch.from_numpy(encoded_data['encoded_bits'].flatten())
-
-    bpg_bin_path = os.path.join(bpg_encoded_dir, image_base_name + '.bin')
-    original_bpg_bit_length = os.path.getsize(bpg_bin_path) * 8
-
-    # 针对不同SNR进行处理
-    for snr in SNR_range:
-        psnr_per_channel = []
-        ms_ssim_per_channel = []
-        for idx_H in range(FA_IM_NUM_H):
-            # 通过信道并解码
-            with torch.no_grad():
-                llr_tensor = channel(encoded_bits_tensor, snr_db = snr, idx_H=idx_H)
-            llr_numpy = llr_tensor.cpu().numpy()
-
-            # llr_numpy = 1 - 2 * encoded_bits_tensor.numpy()
-
-            # 将 LLRs 重塑为 (num_blocks, n_ldpc) 的形状
-            num_blocks = len(llr_numpy) // n_actual_ldpc
-            llr_blocks = llr_numpy.reshape(num_blocks, n_actual_ldpc)
-
-            # 1. 逐块解码，得到估计的码字 y
-            # pyldpc.decode 返回 (message, codeword)
-            y_blocks = np.vstack([pyldpc.decode(H, llr_blocks[i], snr=100, maxiter=MAX_LDPC_ITER) for i in range(num_blocks)])
-            
-            # 2. 从每个码字中提取消息比特
-            decoded_message_stream = np.concatenate([pyldpc.get_message(G, y_blocks[i]) for i in range(num_blocks)])
-
-            # 3. 计算并移除填充
-            remainder = original_bpg_bit_length % k_ldpc
-            padding_len = (k_ldpc - remainder) % k_ldpc # 如果 remainder 是 0, padding_len 也是 0
-            
-            if padding_len > 0:
-                decoded_bpg_bits = decoded_message_stream[:-padding_len]
-            else:
-                decoded_bpg_bits = decoded_message_stream
-            
-            # 断言确保长度正确
-            assert len(decoded_bpg_bits) == original_bpg_bit_length
-            
-            # BPG解码
-
-            decoded_bytes = np.packbits(decoded_bpg_bits)
-            temp_bin_path = os.path.join(decoded_output_dir, f"{image_base_name}_temp.bin")
-            with open(temp_bin_path, 'wb') as f:
-                decoded_bytes.tofile(f)
-
-            decoded_image_path = os.path.join(decoded_output_dir, f"{image_base_name}.png")
-            bpg_decode_command = f'{BPGDEC_PATH} -o "{decoded_image_path}" "{temp_bin_path}"'
-            subprocess.run(bpg_decode_command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            os.remove(temp_bin_path)
-            
-            if not os.path.exists(decoded_image_path):
-                print(" -> BPG decoding FAILED. Skipping metrics.")
-                continue
-
-            # 计算并存储指标
-            decoded_img = Image.open(decoded_image_path).convert('RGB')
-            decoded_tensor = to_tensor(decoded_img).unsqueeze(0).to(DEVICE)
-            
-            psnr_val = calculate_psnr(original_tensor, decoded_tensor, max_val=1.0)
-            ms_ssim_val = calculate_ms_ssim(original_tensor, decoded_tensor, window=ms_ssim_window, data_range=1.0, weights=ms_ssim_weights)
-            psnr_per_channel.append(psnr_val.item())
-            ms_ssim_per_channel.append(ms_ssim_val.item())
-
-        psnr_results[snr].append(np.mean(psnr_per_channel))
-        ms_ssim_results[snr].append(np.mean(ms_ssim_per_channel))
-        # print(f" -> PSNR: {psnr_val.item():.2f}, MS-SSIM: {ms_ssim_val.item():.4f}")
-
-
-# --- 汇总、保存和绘制结果 ---
-avg_psnr_list = []
-avg_ms_ssim_list = []
-print("\n--- Average Performance on Kodak24 Dataset ---")
-results_text = "SNR (dB), Avg PSNR (dB), Avg MS-SSIM\n"
-
-for snr in SNR_range:
-    avg_psnr = np.mean(psnr_results[snr]) if psnr_results[snr] else 0
-    avg_ms_ssim = np.mean(ms_ssim_results[snr]) if ms_ssim_results[snr] else 0
-    avg_psnr_list.append(avg_psnr)
-    avg_ms_ssim_list.append(avg_ms_ssim)
+def process_single_task(mat_filename, snr, idx_H):
+    """
+    处理单个解码任务：一张图片、一个SNR、一个信道实现(idx_H)。
+    返回一个元组: (snr, psnr_value, msssim_value)。
+    """
+    # 子进程会从 init_worker 继承全局变量 H, G, k_ldpc, n_actual_ldpc, channel 等
+    pid = os.getpid()
+    image_base_name, _ = os.path.splitext(mat_filename)
     
-    print(f"SNR: {snr:2d} dB  |  Avg PSNR: {avg_psnr:.4f} dB  |  Avg MS-SSIM: {avg_ms_ssim:.4f}")
-    results_text += f"{snr},{avg_psnr:.4f},{avg_ms_ssim:.4f}\n"
+    print(f"--- [PID:{pid}] Task Start: {image_base_name} | SNR={snr} | H_idx={idx_H} ---")
 
-# 保存数值结果到 CSV 文件
-results_file_path = os.path.join(results_dir, 'results.csv')
-with open(results_file_path, 'w') as f:
-    f.write(results_text)
-print(f"\nNumeric results saved to {results_file_path}")
+    try:
+        # 加载数据
+        original_image_path = os.path.join(ROOT_DIR, image_base_name + '.png')
+        original_img = Image.open(original_image_path).convert('RGB')
+        original_tensor = to_tensor(original_img).unsqueeze(0).to(DEVICE)
 
-# 绘制并保存PSNR曲线
-plt.figure(figsize=(10, 7))
-plt.plot(SNR_range, avg_psnr_list, marker='o', linestyle='-', label=f'BPG+LDPC (FA-IM, BPP={TARGET_BPP})')
-plt.title('PSNR vs. SNR Performance on Kodak24 Dataset')
-plt.xlabel('Signal-to-Noise Ratio (SNR) [dB]')
-plt.ylabel('Average Peak Signal-to-Noise Ratio (PSNR) [dB]')
-plt.xticks(SNR_range)
-plt.grid(True, which='both', linestyle='--')
-plt.legend()
-plot_path_psnr = os.path.join(results_dir, 'PSNR_vs_SNR_curve.png')
-plt.savefig(plot_path_psnr)
-print(f"PSNR plot saved to {plot_path_psnr}")
+        mat_path = os.path.join(LDPC_ENCODED_DIR, mat_filename)
+        encoded_data = loadmat(mat_path)
+        encoded_bits_tensor = torch.from_numpy(encoded_data['encoded_bits'].flatten())
 
-# 绘制并保存MS-SSIM曲线
-plt.figure(figsize=(10, 7))
-plt.plot(SNR_range, avg_ms_ssim_list, marker='s', linestyle='--', color='crimson', label=f'BPG+LDPC (FA-IM, BPP={TARGET_BPP})')
-plt.title('MS-SSIM vs. SNR Performance on Kodak24 Dataset')
-plt.xlabel('Signal-to-Noise Ratio (SNR) [dB]')
-plt.ylabel('Average MS-SSIM')
-plt.xticks(SNR_range)
-plt.grid(True, which='both', linestyle='--')
-plt.legend()
-plot_path_msssim = os.path.join(results_dir, 'MS_SSIM_vs_SNR_curve.png')
-plt.savefig(plot_path_msssim)
-print(f"MS-SSIM plot saved to {plot_path_msssim}")
+        bpg_bin_path = os.path.join(BPG_ENCODED_DIR, image_base_name + '.bin')
+        original_bpg_bit_length = os.path.getsize(bpg_bin_path) * 8
 
-print("\nAnalysis complete.")
+        # with torch.no_grad():
+        #     llr_tensor = channel(encoded_bits_tensor, snr_db=snr, idx_H=idx_H)
+        # llr_numpy = llr_tensor.cpu().numpy()
+        llr_numpy = 1 - 2 * encoded_bits_tensor.numpy()
+
+        num_blocks = len(llr_numpy) // n_actual_ldpc
+        llr_blocks = llr_numpy.reshape(num_blocks, n_actual_ldpc)
+
+        y_blocks = np.vstack([pyldpc.decode(H, llr_blocks[i], snr=100, maxiter=MAX_LDPC_ITER) for i in range(num_blocks)])
+        decoded_message_stream = np.concatenate([pyldpc.get_message(G, y_blocks[i]) for i in range(num_blocks)])
+
+        remainder = original_bpg_bit_length % k_ldpc
+        padding_len = (k_ldpc - remainder) % k_ldpc
+        decoded_bpg_bits = decoded_message_stream[:-padding_len] if padding_len > 0 else decoded_message_stream
+        
+        assert len(decoded_bpg_bits) == original_bpg_bit_length
+        
+        # BPG解码
+        decoded_bytes = np.packbits(decoded_bpg_bits.astype(np.uint8))
+        temp_bin_path = os.path.join(RESULTS_DIR, f"{image_base_name}_temp_{pid}_{snr}_{idx_H}.bin")
+        with open(temp_bin_path, 'wb') as f:
+            decoded_bytes.tofile(f)
+        
+        decoded_image_path = os.path.join(RESULTS_DIR, f"{image_base_name}_snr{snr}_H{idx_H}.png")
+        
+        try:
+            execute_command([BPGDEC_EXECUTABLE, '-o', decoded_image_path, temp_bin_path])
+        except subprocess.CalledProcessError:
+            print(f"    -> [PID:{pid}] BPG decoding FAILED for task. Skipping metrics.")
+            return (snr, None, None) # BPG解码失败，返回None
+        finally:
+             if os.path.exists(temp_bin_path):
+                os.remove(temp_bin_path)
+
+        if not os.path.exists(decoded_image_path):
+            return (snr, None, None)
+
+        # 计算指标
+        decoded_img = Image.open(decoded_image_path).convert('RGB')
+        decoded_tensor = to_tensor(decoded_img).unsqueeze(0).to(DEVICE)
+        
+        psnr_val = calculate_psnr(original_tensor, decoded_tensor, 1.0).item()
+        msssim_val = calculate_ms_ssim(original_tensor, decoded_tensor, ms_ssim_window, 1.0, ms_ssim_weights).item()
+        
+        os.remove(decoded_image_path) # 清理中间图片文件
+
+        print(f"--- [PID:{pid}] Task OK:    {image_base_name} | SNR={snr} | H_idx={idx_H} | PSNR={psnr_val:.4f} ---")
+        return (snr, psnr_val, msssim_val)
+
+    except Exception as e:
+        print(f"--- [PID:{pid}] Task FAILED: {image_base_name} | SNR={snr} | H_idx={idx_H} with error: {e} ---")
+        return (snr, None, None) # 任何其他异常都表示任务失败
+
+
+def init_worker(h_matrix, g_matrix, msssim_win, msssim_w):
+    """
+    这个函数会在每个子进程启动时被调用一次。
+    它的作用是接收父进程传递过来的数据，并创建子进程专属的全局对象。
+    """
+
+    # 将接收到的数据存储为子进程的全局变量
+    # 这样，process_image_all_snrs 函数就能直接访问它们了
+    global H, G, k_ldpc, n_actual_ldpc, channel, ms_ssim_window, ms_ssim_weights
+
+    # --- 初始化LDPC矩阵 ---
+    H = h_matrix
+    G = g_matrix
+    k_ldpc = G.shape[1]
+    n_actual_ldpc = G.shape[0]
+
+    # --- 初始化FA-IM信道 ---
+    channel = FA_IM_Channel(
+        K=FA_IM_K, N=FA_IM_N, Nr=FA_IM_Nr, M=FA_IM_M,
+        num_H=FA_IM_NUM_H, W=FA_IM_W, L_paths=FA_IM_L_PATHS, device=DEVICE
+    )
+    
+    # --- 初始化MS-SSIM组件 ---
+    ms_ssim_window = msssim_win
+    ms_ssim_weights = msssim_w
+
+# ==============================================================================
+# 主程序入口
+# ==============================================================================
+if __name__ == "__main__":
+    try:
+        multiprocessing.set_start_method('spawn')
+    except RuntimeError:
+        # 如果已经设置过了，可能会抛出 RuntimeError，可以安全地忽略
+        pass
+
+    # 在主进程中初始化一次，子进程将继承这些变量
+    matrix_load_path = os.path.join(LDPC_ENCODED_DIR, 'ldpc_matrices.npz')
+    if not os.path.exists(matrix_load_path):
+        raise FileNotFoundError(f"LDPC matrix file not found at {matrix_load_path}.")
+    matrices = np.load(matrix_load_path)
+    h_main, g_main = matrices['H'].astype(np.int32), matrices['G'].astype(np.int32)
+
+    # H, G = pyldpc.make_ldpc(n_ldpc, d_v, d_c, systematic=True, sparse=True)
+    h_main, g_main = pyldpc.make_ldpc(n_ldpc, d_v, d_c, systematic=True, sparse=True)
+
+    msssim_win_main = create_window(11, 3).to(DEVICE)
+    msssim_w_main = torch.tensor([0.0448, 0.2856, 0.3001, 0.2363, 0.1333], device=DEVICE)
+
+    # 创建输出目录
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    
+    # --- 准备文件列表 ---
+    mat_files = sorted([f for f in os.listdir(LDPC_ENCODED_DIR) if f.lower().endswith('.mat')])
+    tasks = []
+    for filename in mat_files:
+        for snr_val in SNR_range:
+            for h_idx in range(FA_IM_NUM_H):
+                tasks.append((filename, snr_val, h_idx))
+
+    # --- 3. 使用 multiprocessing.Pool 进行并行处理 ---
+    num_processes = min(len(tasks), max(1, multiprocessing.cpu_count() - 10))
+    
+    start_time = time.time()
+
+    init_args = (h_main, g_main, msssim_win_main, msssim_w_main)
+    with multiprocessing.Pool(processes=num_processes,
+                              initializer=init_worker,
+                              initargs=init_args) as pool:
+        # 使用 starmap，它会自动将 tasks 列表中的每个元组解包作为参数传给 process_single_task
+        all_results = pool.starmap(process_single_task, tasks)
+    
+    # 单线程测试
+    # mat_files = sorted([f for f in os.listdir(LDPC_ENCODED_DIR) if f.lower().endswith('.mat')])[:1]
+    # init_worker(h_main, g_main, msssim_win_main, msssim_w_main)
+    # all_results = [process_image_all_snrs(mat_files[0])]
+    
+    total_psnr_results = {snr: [] for snr in SNR_range}
+    total_ms_ssim_results = {snr: [] for snr in SNR_range}
+
+    for result in all_results:
+        if result is not None:
+            snr, psnr, msssim = result
+            # 只有当指标不为None时（即任务成功）才添加到列表中
+            if psnr is not None:
+                total_psnr_results[snr].append(psnr)
+            if msssim is not None:
+                total_ms_ssim_results[snr].append(msssim)
+
+    # --- 4. 汇总、保存和绘制结果 ---
+    avg_psnr_list, avg_ms_ssim_list = [], []
+    print("\n--- Average Performance on Kodak24 Dataset ---")
+    results_text = "SNR (dB),Avg PSNR (dB),Avg MS-SSIM\n"
+    for snr in SNR_range:
+        avg_psnr = np.mean(total_psnr_results[snr]) if total_psnr_results[snr] else 0
+        avg_ms_ssim = np.mean(total_ms_ssim_results[snr]) if total_ms_ssim_results[snr] else 0
+        avg_psnr_list.append(avg_psnr)
+        avg_ms_ssim_list.append(avg_ms_ssim)
+        print(f"SNR: {snr:2d} dB | Avg PSNR: {avg_psnr:.4f} dB | Avg MS-SSIM: {avg_ms_ssim:.4f}")
+        results_text += f"{snr},{avg_psnr:.4f},{avg_ms_ssim:.4f}\n"
+
+    # 保存数值结果到 CSV 文件
+    results_file_path = os.path.join(RESULTS_DIR, 'results.csv')
+    with open(results_file_path, 'w') as f:
+        f.write(results_text)
+    print(f"\nNumeric results saved to {results_file_path}")
+
+    # 绘制并保存PSNR曲线
+    plt.figure(figsize=(10, 7))
+    plt.plot(SNR_range, avg_psnr_list, marker='o', linestyle='-', label=f'BPG+LDPC (FA-IM, BPP={TARGET_BPP})')
+    plt.title('PSNR vs. SNR Performance on Kodak24 Dataset')
+    plt.xlabel('Signal-to-Noise Ratio (SNR) [dB]')
+    plt.ylabel('Average Peak Signal-to-Noise Ratio (PSNR) [dB]')
+    plt.xticks(SNR_range)
+    plt.grid(True, which='both', linestyle='--')
+    plt.legend()
+    plot_path_psnr = os.path.join(RESULTS_DIR, 'PSNR_vs_SNR_curve.png')
+    plt.savefig(plot_path_psnr)
+    print(f"PSNR plot saved to {plot_path_psnr}")
+
+    # 绘制并保存MS-SSIM曲线
+    plt.figure(figsize=(10, 7))
+    plt.plot(SNR_range, avg_ms_ssim_list, marker='s', linestyle='--', color='crimson', label=f'BPG+LDPC (FA-IM, BPP={TARGET_BPP})')
+    plt.title('MS-SSIM vs. SNR Performance on Kodak24 Dataset')
+    plt.xlabel('Signal-to-Noise Ratio (SNR) [dB]')
+    plt.ylabel('Average MS-SSIM')
+    plt.xticks(SNR_range)
+    plt.grid(True, which='both', linestyle='--')
+    plt.legend()
+    plot_path_msssim = os.path.join(RESULTS_DIR, 'MS_SSIM_vs_SNR_curve.png')
+    plt.savefig(plot_path_msssim)
+    print(f"MS-SSIM plot saved to {plot_path_msssim}")
+
+    print(f"\nTotal execution time: {time.time() - start_time:.2f} seconds")

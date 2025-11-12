@@ -12,7 +12,7 @@ import multiprocessing # 1. 导入并行处理库
 # 配置参数
 # ==============================================================================
 # --- 目标码率 ---
-TARGET_BPP = 2.0
+TARGET_BPP = 1.5
 bpp_suffix = f"_bpp{TARGET_BPP}"
 # --- LDPC 参数 ---
 n_ldpc = 50
@@ -189,6 +189,9 @@ if __name__ == "__main__":
     os.makedirs(SAVE_DIR_BPG, exist_ok=True)
     os.makedirs(SAVE_DIR_LDPC, exist_ok=True)
 
+    matrix_save_path = os.path.join(SAVE_DIR_LDPC, 'ldpc_matrices.npz')
+    np.savez(matrix_save_path, H=H, G=G)
+
     # --- 准备文件列表 ---
     items_to_process = [
         item for item in sorted(os.listdir(ROOT_DIR)) 
@@ -197,8 +200,7 @@ if __name__ == "__main__":
     # print(f"\nFound {len(items_to_process)} images to process.")
     
     # 4. 使用 multiprocessing.Pool 进行并行处理
-    # 使用CPU核心数减1，为系统保留一个核心
-    num_processes = max(1, multiprocessing.cpu_count() - 10) 
+    num_processes = min(len(items_to_process), max(1, multiprocessing.cpu_count() - 10))
     # print(f"Starting parallel processing with {num_processes} processes...\n")
     
     start_time = time.time()
