@@ -12,7 +12,7 @@ import multiprocessing # 1. 导入并行处理库
 # 配置参数
 # ==============================================================================
 # --- 目标码率 ---
-TARGET_BPP = 1.5
+TARGET_BPP = 6.0
 bpp_suffix = f"_bpp{TARGET_BPP}"
 # --- LDPC 参数 ---
 n_ldpc = 50

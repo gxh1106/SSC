@@ -201,7 +201,7 @@ for idx, mat_filename in enumerate(mat_files):
 
             # 1. 逐块解码，得到估计的码字 y
             # pyldpc.decode 返回 (message, codeword)
-            y_blocks = np.vstack([pyldpc.decode(H, llr_blocks[i], snr=100, maxiter=MAX_LDPC_ITER) for i in range(num_blocks)])
+            y_blocks = np.vstack([pyldpc.decode(H, llr_blocks[i], snr=0, maxiter=MAX_LDPC_ITER) for i in range(num_blocks)])
             # 2. 从每个码字中提取消息比特
             decoded_message_stream = np.concatenate([pyldpc.get_message(G, y_blocks[i]) for i in range(num_blocks)])
 

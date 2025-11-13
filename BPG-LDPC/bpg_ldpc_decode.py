@@ -41,8 +41,8 @@ BPG_ENCODED_DIR = os.path.join(BASE_DIR, DATA_DIR, f'bpg_encoded{bpp_suffix}')
 RESULTS_DIR = os.path.join(BASE_DIR, DATA_DIR, f'results{bpp_suffix}')
 
 # --- 模拟参数 ---
+SNR_START = 0
 SNR_INTERVAL = 2
-SNR_START = 18
 SNR_END = 20 + SNR_INTERVAL
 SNR_range = np.arange(SNR_START, SNR_END, SNR_INTERVAL)
 
@@ -53,7 +53,8 @@ FA_IM_K = 4           # 活动端口的数量 (必须是2的幂)
 FA_IM_N = 16          # 可用的总端口数量
 FA_IM_Nr = 8          # 接收天线的数量
 FA_IM_M = 64           # QAM调制的阶数 (4 for QPSK, 16 for 16-QAM)
-FA_IM_NUM_H = 2       # 信道实现数量 (信道池大小)
+FA_IM_NUM_H = 100       # 信道实现数量 (信道池大小)
+
 FA_IM_W = 2.0         # 发射端流体天线的总宽度 (米)
 FA_IM_L_PATHS = 10    # 多径信道的路径数量
 
@@ -174,15 +175,15 @@ def process_single_task(mat_filename, snr, idx_H):
         bpg_bin_path = os.path.join(BPG_ENCODED_DIR, image_base_name + '.bin')
         original_bpg_bit_length = os.path.getsize(bpg_bin_path) * 8
 
-        # with torch.no_grad():
-        #     llr_tensor = channel(encoded_bits_tensor, snr_db=snr, idx_H=idx_H)
-        # llr_numpy = llr_tensor.cpu().numpy()
-        llr_numpy = 1 - 2 * encoded_bits_tensor.numpy()
+        with torch.no_grad():
+            llr_tensor = channel(encoded_bits_tensor, snr_db=snr, idx_H=idx_H)
+        llr_numpy = llr_tensor.cpu().numpy()
+        # llr_numpy = 1 - 2 * encoded_bits_tensor.numpy()
 
         num_blocks = len(llr_numpy) // n_actual_ldpc
         llr_blocks = llr_numpy.reshape(num_blocks, n_actual_ldpc)
 
-        y_blocks = np.vstack([pyldpc.decode(H, llr_blocks[i], snr=100, maxiter=MAX_LDPC_ITER) for i in range(num_blocks)])
+        y_blocks = np.vstack([pyldpc.decode(H, llr_blocks[i], snr=snr, maxiter=MAX_LDPC_ITER) for i in range(num_blocks)])
         decoded_message_stream = np.concatenate([pyldpc.get_message(G, y_blocks[i]) for i in range(num_blocks)])
 
         remainder = original_bpg_bit_length % k_ldpc
@@ -269,10 +270,9 @@ if __name__ == "__main__":
     if not os.path.exists(matrix_load_path):
         raise FileNotFoundError(f"LDPC matrix file not found at {matrix_load_path}.")
     matrices = np.load(matrix_load_path)
-    h_main, g_main = matrices['H'].astype(np.int32), matrices['G'].astype(np.int32)
+    h_main, g_main = matrices['H'], matrices['G']
 
-    # H, G = pyldpc.make_ldpc(n_ldpc, d_v, d_c, systematic=True, sparse=True)
-    h_main, g_main = pyldpc.make_ldpc(n_ldpc, d_v, d_c, systematic=True, sparse=True)
+    # h_main, g_main = pyldpc.make_ldpc(n_ldpc, d_v, d_c, systematic=True, sparse=True)
 
     msssim_win_main = create_window(11, 3).to(DEVICE)
     msssim_w_main = torch.tensor([0.0448, 0.2856, 0.3001, 0.2363, 0.1333], device=DEVICE)
@@ -301,9 +301,8 @@ if __name__ == "__main__":
         all_results = pool.starmap(process_single_task, tasks)
     
     # 单线程测试
-    # mat_files = sorted([f for f in os.listdir(LDPC_ENCODED_DIR) if f.lower().endswith('.mat')])[:1]
     # init_worker(h_main, g_main, msssim_win_main, msssim_w_main)
-    # all_results = [process_image_all_snrs(mat_files[0])]
+    # all_results = [process_single_task(*tasks[0])]
     
     total_psnr_results = {snr: [] for snr in SNR_range}
     total_ms_ssim_results = {snr: [] for snr in SNR_range}

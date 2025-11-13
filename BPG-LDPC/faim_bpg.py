@@ -13,7 +13,7 @@ class FA_IM_Channel(nn.Module):
     最终输出带噪声的二进制张量。
     """
 
-    def __init__(self, K: int, N: int, Nr: int, M: int, num_H: int, W: float, L_paths: int, device: str = 'cuda', codebook_size: int = 16):
+    def __init__(self, K: int, N: int, Nr: int, M: int, num_H: int, W: float, L_paths: int, device: str = 'cpu'):
         """
         初始化FA-IM信道模块。
 
@@ -36,8 +36,6 @@ class FA_IM_Channel(nn.Module):
         self.Nr = Nr
         self.M = M
         self.device = device
-        # 假设输入的embedding_indices范围是0-15
-        self.bits_per_input_index = int(math.log2(codebook_size))
 
         # 索引比特数
         self.m_index = int(math.log2(self.K))
@@ -48,6 +46,7 @@ class FA_IM_Channel(nn.Module):
         
         # 每帧传输的总比特数
         self.bits_per_frame = self.m_index + self.m_sym
+        self.num_total_signals = 2**self.bits_per_frame
 
         # --- 3. 预计算QAM星座和所有可能的发射信号 ---
         H_pool = self._generate_mmwave_channel(Nr, N, W, L_paths, num_H, device) # Shape: (num_H, Nr, N)
@@ -55,6 +54,7 @@ class FA_IM_Channel(nn.Module):
         self.constellation = self._generate_qam_constellation().to(device)
         # 预计算所有可能的发射信号，每个信号都是一个列向量
         self.all_possible_x = self._precompute_all_tx_signals().to(device) # Shape: (K*M, K)
+        self.all_possible_bits = self._precompute_all_possible_bits().to(device) # Shape: (K*M, bits_per_frame)
 
     def _generate_mmwave_channel(self, Nr, N, W, L, num_realizations = 1, device = 'cuda') -> torch.Tensor:
         """
@@ -173,6 +173,19 @@ class FA_IM_Channel(nn.Module):
             all_x[start_idx:end_idx, port_idx] = self.constellation
         return all_x
 
+    def _precompute_all_possible_bits(self) -> torch.Tensor:
+        """
+        预计算所有可能传输比特模式的查找表。
+        第i行是整数i的二进制表示。
+        """
+        # 创建从0到num_total_signals-1的整数
+        decimal_indices = torch.arange(self.num_total_signals, device=self.device, dtype=torch.long)
+        
+        # 将每个整数转换为其比特模式
+        all_bits = self._decimal_to_bits(decimal_indices, self.bits_per_frame)
+        
+        return all_bits
+
     def _bits_to_decimal(self, bits: torch.Tensor) -> torch.Tensor:
         """将一批二进制张量转换为十进制数。"""
         mask = 2**torch.arange(bits.shape[-1] - 1, -1, -1, device=self.device)
@@ -183,84 +196,87 @@ class FA_IM_Channel(nn.Module):
         mask = 2**torch.arange(num_bits - 1, -1, -1, device=self.device)
         return decimal.unsqueeze(-1).bitwise_and(mask).ne(0).long()
 
-    def forward(self, bits: torch.Tensor, snr_db: float, idx_H: int = 0, batch_size: int = 4096) -> torch.Tensor:
+    def forward(self, bits: torch.Tensor, snr_db: float, idx_H: int = 0, batch_size: int = 65536) -> torch.Tensor:
         """
         Processes bits through the FA-IM channel and returns LLRs.
         Uses batching to manage memory for large bitstreams.
         """
-        return 1 - 2 * bits
-        # bits = bits.to(self.device)
-        # num_total_bits = bits.shape[0]
+        bits = bits.to(self.device)
+        original_len = bits.shape[0]
+
+        remainder = original_len % self.bits_per_frame
+        if remainder != 0:
+            padding_len = self.bits_per_frame - remainder
+            # 创建与输入张量相同类型和设备的补零张量
+            padding = torch.zeros(padding_len, dtype=bits.dtype, device=self.device)
+            # 将补零拼接到原始比特流末尾
+            padded_bits = torch.cat([bits, padding], dim=0)
+        else:
+            # 如果长度刚好，则无需补零
+            padded_bits = bits
         
-        # # Ensure input can be perfectly reshaped
-        # assert num_total_bits % self.bits_per_frame == 0, "Total number of bits must be divisible by bits_per_frame."
-        
-        # num_frames = num_total_bits // self.bits_per_frame
-        # bit_frames = bits.reshape(num_frames, self.bits_per_frame)
-        
-        # all_llrs = []
+        num_total_bits = padded_bits.shape[0]
+        num_frames = num_total_bits // self.bits_per_frame
+        bit_frames = padded_bits.reshape(num_frames, self.bits_per_frame)
 
-        # for i in range(0, num_frames, batch_size):
-        #     batch_frames = bit_frames[i:i+batch_size]
-        #     current_batch_size = batch_frames.shape[0]
+        all_llrs = []
 
-        #     # 1. Map bits to transmitted signal x
-        #     index_bits = batch_frames[:, :self.m_index]
-        #     symbol_bits = batch_frames[:, self.m_index:]
-            
-        #     port_indices = self._bits_to_decimal(index_bits)
-        #     symbol_indices = self._bits_to_decimal(symbol_bits)
-            
-        #     tx_signal_indices = port_indices * self.M + symbol_indices
-        #     x = self.all_possible_x[tx_signal_indices]  # Shape: (batch_size, K)
+        for i in range(0, num_frames, batch_size):
+            batch_frames = bit_frames[i:i+batch_size]
+            current_batch_size = batch_frames.shape[0]
 
-        #     # 2. Simulate channel: y = Hx + n
-        #     snr_linear = 10 ** (snr_db / 10.0)
-        #     noise_variance = 1 / snr_linear
-            
-        #     # Randomly select channels from the pool for the batch
-        #     h_indices = torch.randint(0, self.Hs_pool.shape[0], (current_batch_size,), device=self.device)
-        #     H = self.Hs_pool[h_indices] # Shape: (batch_size, Nr, K)
-            
-        #     # Generate complex noise
-        #     noise = torch.sqrt(torch.tensor(noise_variance / 2.0)) * \
-        #             (torch.randn(current_batch_size, self.Nr, device=self.device) + 1j * torch.randn(current_batch_size, self.Nr, device=self.device))
-            
-        #     # Calculate received signal y
-        #     y = (H @ x.unsqueeze(-1)).squeeze(-1) + noise # Shape: (batch_size, Nr)
+            # 1. Map bits to transmitted signal x
+            x_indices = self._bits_to_decimal(batch_frames)
+            x = self.all_possible_x[x_indices]  # Shape: (batch_size, K)
 
-        #     # 3. Maximum Likelihood (ML) Detection and LLR Calculation
-        #     # Calculate likelihoods for all possible transmitted signals
-        #     # all_y_hat = H @ self.all_possible_x.T -> (batch_size, Nr, K*M)
-        #     all_y_hat = H @ self.all_possible_x.T
+            # 2. Simulate channel: y = Hx + n
+            snr_linear = 10 ** (snr_db / 10.0)
+            noise_variance = 1 / snr_linear
             
-        #     # Euclidean distance: ||y - Hx||^2
-        #     # y -> (batch_size, Nr, 1)
-        #     # all_y_hat -> (batch_size, Nr, K*M)
-        #     # dist_sq -> (batch_size, K*M)
-        #     dist_sq = torch.sum(torch.abs(y.unsqueeze(2) - all_y_hat)**2, dim=1)
+            # select channel from the pool for the batch
+            H = self.Hs_pool[idx_H].to(self.device) # Shape: (Nr, K)
             
-        #     # Likelihoods are proportional to exp(-dist^2 / noise_var)
-        #     likelihoods = F.softmax(-dist_sq / noise_variance, dim=1) # Use softmax for numerical stability
+            # Generate complex noise
+            noise = torch.sqrt(torch.tensor(noise_variance / 2.0)) * \
+                    (torch.randn(current_batch_size, self.Nr, device=self.device) + 1j * torch.randn(current_batch_size, self.Nr, device=self.device))
+            
+            # Calculate received signal y
+            y = (H.unsqueeze(0) @ x.unsqueeze(-1)).squeeze(-1) + noise # Shape: (batch_size, Nr)
 
-        #     # 4. Calculate LLRs for each bit
-        #     batch_llrs = torch.zeros_like(batch_frames, dtype=torch.float32)
-        #     for j in range(self.bits_per_frame):
-        #         # Sum of likelihoods where j-th bit is 0
-        #         mask_0 = (self.all_possible_bits[:, j] == 0)
-        #         sum_p0 = torch.sum(likelihoods * mask_0, dim=1)
+            # 3. Maximum Likelihood (ML) Detection and LLR Calculation
+            # Calculate likelihoods for all possible transmitted signals
+            # all_y_hat = H @ self.all_possible_x.T -> (Nr, K*M)
+            all_y_hat = H @ self.all_possible_x.T
+            
+            # Euclidean distance: ||y - Hx||^2
+            # y -> (batch_size, Nr, 1)
+            # all_y_hat -> (batch_size, Nr, K*M)
+            # dist_sq -> (batch_size, K*M)
+            dist_sq = torch.sum(torch.abs(y.unsqueeze(2) - all_y_hat.unsqueeze(0))**2, dim=1)
+            
+            # Likelihoods are proportional to exp(-dist^2 / noise_var)
+            likelihoods = F.softmax(-dist_sq / noise_variance, dim=1) # Use softmax for numerical stability
+
+            # 4. Calculate LLRs for each bit
+            batch_llrs = torch.zeros_like(batch_frames, dtype=torch.float64)
+            for j in range(self.bits_per_frame):
+                # Sum of likelihoods where j-th bit is 0
+                mask_0 = (self.all_possible_bits[:, j] == 0)
+                sum_p0 = torch.sum(likelihoods * mask_0, dim=1)
                 
-        #         # Sum of likelihoods where j-th bit is 1
-        #         mask_1 = (self.all_possible_bits[:, j] == 1)
-        #         sum_p1 = torch.sum(likelihoods * mask_1, dim=1)
+                # Sum of likelihoods where j-th bit is 1
+                mask_1 = (self.all_possible_bits[:, j] == 1)
+                sum_p1 = torch.sum(likelihoods * mask_1, dim=1)
                 
-        #         # LLR = log(P0/P1)
-        #         batch_llrs[:, j] = torch.log(sum_p0 / (sum_p1 + 1e-20) + 1e-20) # Add epsilon for stability
+                # LLR = log(P0/P1)
+                batch_llrs[:, j] = torch.log(sum_p0 / (sum_p1 + 1e-20) + 1e-20) # Add epsilon for stability
             
-        #     all_llrs.append(batch_llrs)
+            all_llrs.append(batch_llrs)
 
-        # final_llrs = torch.cat(all_llrs, dim=0).flatten()
-        # return final_llrs
+        final_llrs_padded = torch.cat(all_llrs, dim=0).flatten()
+        final_llrs = final_llrs_padded[:original_len]
+
+        return final_llrs
     
     
     

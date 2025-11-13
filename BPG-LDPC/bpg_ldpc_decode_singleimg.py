@@ -190,7 +190,7 @@ def process_image_all_snrs(mat_filename):
                 num_blocks = len(llr_numpy) // n_actual_ldpc
                 llr_blocks = llr_numpy.reshape(num_blocks, n_actual_ldpc)
 
-                y_blocks = np.vstack([pyldpc.decode(H, llr_blocks[i], snr=100, maxiter=MAX_LDPC_ITER) for i in range(num_blocks)])
+                y_blocks = np.vstack([pyldpc.decode(H, llr_blocks[i], snr=0, maxiter=MAX_LDPC_ITER) for i in range(num_blocks)])
                 decoded_message_stream = np.concatenate([pyldpc.get_message(G, y_blocks[i]) for i in range(num_blocks)])
 
 
