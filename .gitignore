@@ -149,3 +149,4 @@ rqvae_transformer/
 # 忽略所有以 output 开头的文件夹（包含内容）
 /output*/
 BPG-LDPC/Kodak24/
+BPG-LDPC/results*/

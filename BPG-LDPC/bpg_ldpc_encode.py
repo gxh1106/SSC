@@ -22,9 +22,9 @@ d_c = 5
 BASE_DIR = './BPG-LDPC'
 DATA_DIR = 'Kodak24'
 BPGENC_EXECUTABLE = os.path.join(BASE_DIR, 'bpgenc.exe')
-ROOT_DIR = os.path.join(BASE_DIR, DATA_DIR, 'original_data')
-SAVE_DIR_BPG = os.path.join(BASE_DIR, DATA_DIR, f'bpg_encoded{bpp_suffix}')
-SAVE_DIR_LDPC = os.path.join(BASE_DIR, DATA_DIR, f'ldpc_encoded{bpp_suffix}')
+ROOT_DIR = os.path.join(BASE_DIR, DATA_DIR, 'data_resize')
+SAVE_DIR_BPG = os.path.join(BASE_DIR, DATA_DIR, 'encode_resize', f'bpg_encoded{bpp_suffix}')
+SAVE_DIR_LDPC = os.path.join(BASE_DIR, DATA_DIR, 'encode_resize', f'ldpc_encoded{bpp_suffix}')
 
 # ==============================================================================
 # 辅助函数

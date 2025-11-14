@@ -10,7 +10,8 @@ from scipy.io import loadmat
 from PIL import Image
 from torchvision.transforms.functional import to_tensor
 import matplotlib.pyplot as plt
-import multiprocessing # 1. 导入并行处理库
+import multiprocessing
+from tqdm import tqdm
 
 from faim_bpg import FA_IM_Channel
 
@@ -24,7 +25,7 @@ from faim_bpg import FA_IM_Channel
 # ==============================================================================
 os.environ["CUDA_VISIBLE_DEVICES"] = "5,6"
 
-TARGET_BPP = 1.0
+TARGET_BPP = 2.0
 bpp_suffix = f"_bpp{TARGET_BPP}"
 n_ldpc = 50
 d_v = 3
@@ -34,9 +35,9 @@ MAX_LDPC_ITER = 50
 BASE_DIR = './BPG-LDPC' 
 DATA_DIR = 'Kodak24'
 BPGDEC_EXECUTABLE = os.path.join(BASE_DIR, 'bpgdec.exe')
-ROOT_DIR = os.path.join(BASE_DIR, DATA_DIR, 'original_data')
-LDPC_ENCODED_DIR = os.path.join(BASE_DIR, DATA_DIR, f'ldpc_encoded{bpp_suffix}')
-BPG_ENCODED_DIR = os.path.join(BASE_DIR, DATA_DIR, f'bpg_encoded{bpp_suffix}')
+ROOT_DIR = os.path.join(BASE_DIR, DATA_DIR, 'data_resize')
+LDPC_ENCODED_DIR = os.path.join(BASE_DIR, DATA_DIR, 'encode_resize', f'ldpc_encoded{bpp_suffix}')
+BPG_ENCODED_DIR = os.path.join(BASE_DIR, DATA_DIR, 'encode_resize', f'bpg_encoded{bpp_suffix}')
 # DECODED_OUTPUT_DIR = os.path.join(BASE_DIR, DATA_DIR, f'decoded_images{bpp_suffix}')
 RESULTS_DIR = os.path.join(BASE_DIR, DATA_DIR, f'results{bpp_suffix}')
 
@@ -46,6 +47,7 @@ SNR_INTERVAL = 2
 SNR_END = 20 + SNR_INTERVAL
 SNR_range = np.arange(SNR_START, SNR_END, SNR_INTERVAL)
 
+TRANS_NUM = 10  # 每个SNR点的传输次数
 # --- FA-IM 信道参数 ---
 # DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEVICE = "cpu"
@@ -145,7 +147,7 @@ def execute_command(command_list):
     try:
         subprocess.run(command_list, env=my_env, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
-        print(f"命令执行失败: {' '.join(command_list)}\n错误信息:\n{e.stderr}")
+        tqdm.write(f"命令执行失败: {' '.join(command_list)}\n错误信息:\n{e.stderr}")
         raise
 
 # ==============================================================================
@@ -153,14 +155,14 @@ def execute_command(command_list):
 # ==============================================================================
 def process_single_task(mat_filename, snr, idx_H):
     """
-    处理单个解码任务：一张图片、一个SNR、一个信道实现(idx_H)。
+    处理单个解码任务：一张图片、一个SNR、一次传输(idx_H)。
     返回一个元组: (snr, psnr_value, msssim_value)。
     """
     # 子进程会从 init_worker 继承全局变量 H, G, k_ldpc, n_actual_ldpc, channel 等
     pid = os.getpid()
     image_base_name, _ = os.path.splitext(mat_filename)
     
-    print(f"--- [PID:{pid}] Task Start: {image_base_name} | SNR={snr} | H_idx={idx_H} ---")
+    tqdm.write(f"--- [PID:{pid}] Task Start: {image_base_name} | SNR={snr} | H_idx={idx_H} ---")
 
     try:
         # 加载数据
@@ -176,8 +178,8 @@ def process_single_task(mat_filename, snr, idx_H):
         original_bpg_bit_length = os.path.getsize(bpg_bin_path) * 8
 
         with torch.no_grad():
-            llr_tensor = channel(encoded_bits_tensor, snr_db=snr, idx_H=idx_H)
-        llr_numpy = llr_tensor.cpu().numpy()
+            llr_tensor = channel(encoded_bits_tensor, snr_db=snr)
+        llr_numpy = llr_tensor.cpu().to(torch.float64).numpy()
         # llr_numpy = 1 - 2 * encoded_bits_tensor.numpy()
 
         num_blocks = len(llr_numpy) // n_actual_ldpc
@@ -203,11 +205,14 @@ def process_single_task(mat_filename, snr, idx_H):
         try:
             execute_command([BPGDEC_EXECUTABLE, '-o', decoded_image_path, temp_bin_path])
         except subprocess.CalledProcessError:
-            print(f"    -> [PID:{pid}] BPG decoding FAILED for task. Skipping metrics.")
+            tqdm.write(f"    -> [PID:{pid}] BPG decoding FAILED for task. Skipping metrics.")
+            if os.path.exists(decoded_image_path):
+                os.remove(decoded_image_path)
             return (snr, None, None) # BPG解码失败，返回None
         finally:
              if os.path.exists(temp_bin_path):
                 os.remove(temp_bin_path)
+             
 
         if not os.path.exists(decoded_image_path):
             return (snr, None, None)
@@ -221,11 +226,13 @@ def process_single_task(mat_filename, snr, idx_H):
         
         os.remove(decoded_image_path) # 清理中间图片文件
 
-        print(f"--- [PID:{pid}] Task OK:    {image_base_name} | SNR={snr} | H_idx={idx_H} | PSNR={psnr_val:.4f} ---")
+        tqdm.write(f"--- [PID:{pid}] Task OK:    {image_base_name} | SNR={snr} | H_idx={idx_H} | PSNR={psnr_val:.4f} ---")
         return (snr, psnr_val, msssim_val)
 
     except Exception as e:
-        print(f"--- [PID:{pid}] Task FAILED: {image_base_name} | SNR={snr} | H_idx={idx_H} with error: {e} ---")
+        tqdm.write(f"--- [PID:{pid}] Task FAILED: {image_base_name} | SNR={snr} | H_idx={idx_H} with error: {e} ---")
+        if os.path.exists(decoded_image_path):
+            os.remove(decoded_image_path)
         return (snr, None, None) # 任何其他异常都表示任务失败
 
 
@@ -255,6 +262,13 @@ def init_worker(h_matrix, g_matrix, msssim_win, msssim_w):
     ms_ssim_window = msssim_win
     ms_ssim_weights = msssim_w
 
+# 1. 创建一个辅助函数，用于解包参数
+# 它的作用就是接收一个元组 (arg1, arg2, ...)，然后用 *args 的形式传给你的真实任务函数
+def starmap_helper(args):
+    """
+    辅助函数，用于 imap 系列函数调用需要解包参数的函数
+    """
+    return process_single_task(*args)
 # ==============================================================================
 # 主程序入口
 # ==============================================================================
@@ -285,7 +299,7 @@ if __name__ == "__main__":
     tasks = []
     for filename in mat_files:
         for snr_val in SNR_range:
-            for h_idx in range(FA_IM_NUM_H):
+            for h_idx in range(TRANS_NUM):
                 tasks.append((filename, snr_val, h_idx))
 
     # --- 3. 使用 multiprocessing.Pool 进行并行处理 ---
@@ -298,7 +312,14 @@ if __name__ == "__main__":
                               initializer=init_worker,
                               initargs=init_args) as pool:
         # 使用 starmap，它会自动将 tasks 列表中的每个元组解包作为参数传给 process_single_task
-        all_results = pool.starmap(process_single_task, tasks)
+        # all_results = pool.starmap(process_single_task, tasks)
+
+        # 1. 使用 imap_unordered 并传入辅助函数
+        # 2. imap_unordered 立即返回一个结果迭代器
+        results_iterator = pool.imap_unordered(starmap_helper, tasks)
+        # 3. 用 tqdm 包装这个迭代器
+        # 4. 用 list() 消耗掉迭代器，驱动整个过程，并收集所有结果
+        all_results = list(tqdm(results_iterator, total=len(tasks), desc="并发任务进度"))
     
     # 单线程测试
     # init_worker(h_main, g_main, msssim_win_main, msssim_w_main)

@@ -196,7 +196,7 @@ class FA_IM_Channel(nn.Module):
         mask = 2**torch.arange(num_bits - 1, -1, -1, device=self.device)
         return decimal.unsqueeze(-1).bitwise_and(mask).ne(0).long()
 
-    def forward(self, bits: torch.Tensor, snr_db: float, idx_H: int = 0, batch_size: int = 65536) -> torch.Tensor:
+    def forward(self, bits: torch.Tensor, snr_db: float, idx_H: int = 0, batch_size: int = 4096) -> torch.Tensor:
         """
         Processes bits through the FA-IM channel and returns LLRs.
         Uses batching to manage memory for large bitstreams.
@@ -220,6 +220,10 @@ class FA_IM_Channel(nn.Module):
         bit_frames = padded_bits.reshape(num_frames, self.bits_per_frame)
 
         all_llrs = []
+        # # select channel from the pool for the batch
+        # H = self.Hs_pool[idx_H].to(self.device) # Shape: (Nr, K)
+        # # all_y_hat = H @ self.all_possible_x.T -> (Nr, K*M)
+        # all_y_hat = H @ self.all_possible_x.T
 
         for i in range(0, num_frames, batch_size):
             batch_frames = bit_frames[i:i+batch_size]
@@ -233,50 +237,56 @@ class FA_IM_Channel(nn.Module):
             snr_linear = 10 ** (snr_db / 10.0)
             noise_variance = 1 / snr_linear
             
-            # select channel from the pool for the batch
-            H = self.Hs_pool[idx_H].to(self.device) # Shape: (Nr, K)
-            
             # Generate complex noise
             noise = torch.sqrt(torch.tensor(noise_variance / 2.0)) * \
                     (torch.randn(current_batch_size, self.Nr, device=self.device) + 1j * torch.randn(current_batch_size, self.Nr, device=self.device))
             
+            # Randomly select channel realizations for the batch
+            h_indices = torch.randint(0, self.Hs_pool.shape[0], (current_batch_size,), device=self.device)
+            H = self.Hs_pool[h_indices]  # 形状: [batch_size, Nr, K]
+
+            all_y_hat = H @ self.all_possible_x.T # 形状: [batch_size, Nr, num_total_signals]
+
             # Calculate received signal y
-            y = (H.unsqueeze(0) @ x.unsqueeze(-1)).squeeze(-1) + noise # Shape: (batch_size, Nr)
+            y = (H @ x.unsqueeze(-1)).squeeze(-1) + noise # Shape: (batch_size, Nr)
 
             # 3. Maximum Likelihood (ML) Detection and LLR Calculation
             # Calculate likelihoods for all possible transmitted signals
-            # all_y_hat = H @ self.all_possible_x.T -> (Nr, K*M)
-            all_y_hat = H @ self.all_possible_x.T
-            
             # Euclidean distance: ||y - Hx||^2
             # y -> (batch_size, Nr, 1)
             # all_y_hat -> (batch_size, Nr, K*M)
             # dist_sq -> (batch_size, K*M)
-            dist_sq = torch.sum(torch.abs(y.unsqueeze(2) - all_y_hat.unsqueeze(0))**2, dim=1)
+            dist_sq = torch.sum(torch.abs(y.unsqueeze(2) - all_y_hat)**2, dim=1)
             
             # Likelihoods are proportional to exp(-dist^2 / noise_var)
             likelihoods = F.softmax(-dist_sq / noise_variance, dim=1) # Use softmax for numerical stability
 
             # 4. Calculate LLRs for each bit
-            batch_llrs = torch.zeros_like(batch_frames, dtype=torch.float64)
-            for j in range(self.bits_per_frame):
-                # Sum of likelihoods where j-th bit is 0
-                mask_0 = (self.all_possible_bits[:, j] == 0)
-                sum_p0 = torch.sum(likelihoods * mask_0, dim=1)
-                
-                # Sum of likelihoods where j-th bit is 1
-                mask_1 = (self.all_possible_bits[:, j] == 1)
-                sum_p1 = torch.sum(likelihoods * mask_1, dim=1)
-                
-                # LLR = log(P0/P1)
-                batch_llrs[:, j] = torch.log(sum_p0 / (sum_p1 + 1e-20) + 1e-20) # Add epsilon for stability
-            
+            # batch_llrs = torch.zeros_like(batch_frames, dtype=torch.float64)
+            # for j in range(self.bits_per_frame):
+            #     # Sum of likelihoods where j-th bit is 0
+            #     mask_0 = (self.all_possible_bits[:, j] == 0)
+            #     sum_p0 = torch.sum(likelihoods * mask_0, dim=1)
+            #     # Sum of likelihoods where j-th bit is 1
+            #     mask_1 = (self.all_possible_bits[:, j] == 1)
+            #     sum_p1 = torch.sum(likelihoods * mask_1, dim=1)
+            #     # LLR = log(P0/P1)
+            #     batch_llrs[:, j] = torch.log(sum_p0 / (sum_p1 + 1e-20) + 1e-20) # Add epsilon for stability
+
+            bits_float = self.all_possible_bits.float()
+            sum_p1 = likelihoods @ bits_float
+            sum_p0 = likelihoods @ (1 - bits_float) # 总概率为1，所以P0 = 1 - P1不完全成立，因为是不同比特位的概率。这里应该用总和减去P1
+            # 更稳健的写法是:
+            # total_likelihood_sum = torch.sum(likelihoods, dim=1, keepdim=True)
+            # sum_p0 = total_likelihood_sum - sum_p1
+            # 但直接用(1-bits_float)在数学上是等价且更高效的。
+            batch_llrs = torch.log(sum_p0.clamp(min=1e-20) / sum_p1.clamp(min=1e-20))
+
             all_llrs.append(batch_llrs)
 
         final_llrs_padded = torch.cat(all_llrs, dim=0).flatten()
-        final_llrs = final_llrs_padded[:original_len]
 
-        return final_llrs
+        return final_llrs_padded[:original_len]
     
     
     
