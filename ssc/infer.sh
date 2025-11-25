@@ -3,13 +3,49 @@
 # 如果任何命令执行失败，脚本将立即退出
 set -e
 
-export CUDA_VISIBLE_DEVICES="1"
+# export CUDA_VISIBLE_DEVICES="7"
+# export CUDA_VISIBLE_DEVICES="6"
+# export CUDA_VISIBLE_DEVICES="5"
+export CUDA_VISIBLE_DEVICES="4"
+# export CUDA_VISIBLE_DEVICES="3"
 
-CONFIG_FILE="options/Ke/train_SSC_96C_16E_4D_Ke4_from_pretrain.yml"
-MODEL_PATH="experiments/Ke/train_SSC_96C_16E_4D_Ke4_newTrain/models/net_g_latest.pth"
+# export CUDA_VISIBLE_DEVICES="2"
+# export CUDA_VISIBLE_DEVICES="1"
+
+CONFIG_FILE="experiments/diff_train/train_SSC_bbp1_96C_16E_2D_oldTrain/train_SSC_bpp1_96C_16E_2D_from_pretrain_oldTrain.yml"
+MODEL_PATH="experiments/diff_train/train_SSC_bbp1_96C_16E_2D_oldTrain/models/net_g_latest.pth"
+OUTPUT_DIR="output/diff_train/96C_2D_oldTrain"
+# CONFIG_FILE="experiments/diff_train/train_SSC_bbp2_32C_16E_4D_oldTrain/train_SSC_bpp2_32C_16E_4D_from_pretrain_oldTrain.yml"
+# MODEL_PATH="experiments/diff_train/train_SSC_bbp2_32C_16E_4D_oldTrain/models/net_g_latest.pth"
+# OUTPUT_DIR="output/diff_train/32C_4D_oldTrain"
+
+# CONFIG_FILE="experiments/16xD/train_VQ_bpp6_96C_65536E/train_VQ_bpp2_96C_65536E_from_pretrain.yml"
+# MODEL_PATH="experiments/16xD/train_VQ_bpp6_96C_65536E/models/net_g_latest.pth"
+# OUTPUT_DIR="output/16xD/bpp6_96C_16E_4D/sDAC_FA-IM"
+# CONFIG_FILE="experiments/16xD/train_VQ_bpp4d5_96C_4096E/train_VQ_bpp1d5_96C_4096E_from_pretrain.yml"
+# MODEL_PATH="experiments/16xD/train_VQ_bpp4d5_96C_4096E/models/net_g_latest.pth"
+# OUTPUT_DIR="output/16xD/bpp4d5_96C_16E_3D/sDAC_FA-IM"
+# CONFIG_FILE="experiments/16xD/train_VQ_bpp3_96C_256E/train_VQ_bpp1_96C_256E_from_pretrain.yml"
+# MODEL_PATH="experiments/16xD/train_VQ_bpp3_96C_256E/models/net_g_latest.pth"
+# OUTPUT_DIR="output/16xD/bpp3_96C_16E_2D/sDAC_FA-IM"
+# CONFIG_FILE="experiments/16xD/train_VQ_bpp1d5_32C_4096E/train_VQ_bpp1d5_32C_4096E_from_pretrain.yml"
+# MODEL_PATH="experiments/16xD/train_VQ_bpp1d5_32C_4096E/models/net_g_latest.pth"
+# OUTPUT_DIR="output/16xD/bpp1d5_32C_16E_3D/sDAC_FA-IM"
+# CONFIG_FILE="experiments/16xD/train_VQ_bpp2_32C_65536E/train_VQ_bpp2_32C_65536E_from_pretrain.yml"
+# MODEL_PATH="experiments/16xD/train_VQ_bpp2_32C_65536E/models/net_g_latest.pth"
+# OUTPUT_DIR="output/16xD/bpp2_32C_16E_4D/sDAC_FA-IM"
+
+# CONFIG_FILE="experiments/16xD/train_SSC_bpp4d5_96C_16E_3D/train_SSC_bpp1d5_96C_16E_3D_from_pretrain.yml"
+# MODEL_PATH="experiments/16xD/train_SSC_bpp4d5_96C_16E_3D/models/net_g_latest.pth"
+# OUTPUT_DIR="output/16xD/bpp4d5_96C_16E_3D/SSC_new"
+# CONFIG_FILE="experiments/16xD/train_SSC_bpp3_96C_16E_2D/train_SSC_bpp1_96C_16E_2D_from_pretrain.yml"
+# MODEL_PATH="experiments/16xD/train_SSC_bpp3_96C_16E_2D/models/net_g_latest.pth"
+# OUTPUT_DIR="output/16xD/bpp3_96C_16E_2D/SSC_woIM"
+# CONFIG_FILE="experiments/16xD/train_SSC_bpp1d5_32C_16E_3D/train_SSC_bpp1d5_32C_16E_3D_from_pretrain.yml"
+# MODEL_PATH="experiments/16xD/train_SSC_bpp1d5_32C_16E_3D/models/net_g_latest.pth"
+# OUTPUT_DIR="output/16xD/bpp1d5_32C_16E_3D/SSC_"
+
 KODAK24_PATH="datasets/Kodak24"
-OUTPUT_DIR="output/test_SwinSSC_EEP"
-
 
 # 构造基础命令
 CMD="python ssc/inference.py \

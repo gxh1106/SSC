@@ -4,14 +4,13 @@ import time
 import os
 import sys
 import subprocess
-import torch
-import torch.nn.functional as F
 from scipy.io import loadmat
 from PIL import Image
 from torchvision.transforms.functional import to_tensor
 import matplotlib.pyplot as plt
 import multiprocessing
 from tqdm import tqdm
+import pandas as pd
 
 from faim_bpg import FA_IM_Channel
 
@@ -20,31 +19,45 @@ from faim_bpg import FA_IM_Channel
 # # 忽略来自 pyldpc.decoder 的特定 UserWarning
 # warnings.filterwarnings("ignore", category=UserWarning, module="pyldpc.decoder")
 
-# ==============================================================================
-# 配置参数 (已使用os.path.join实现跨平台)
-# ==============================================================================
-os.environ["CUDA_VISIBLE_DEVICES"] = "5,6"
+# use fork
+os.environ["CUDA_VISIBLE_DEVICES"] = "6,7"
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
-TARGET_BPP = 2.0
+import torch
+import torch.nn.functional as F
+torch.set_num_threads(1)
+
+
+# ==============================================================================
+# 配置参数
+# ==============================================================================
+TARGET_BPP = 3.0
 bpp_suffix = f"_bpp{TARGET_BPP}"
-n_ldpc = 50
-d_v = 3
-d_c = 5
-MAX_LDPC_ITER = 50
+n_ldpc = 1944
+d_v = 23
+d_c = 24
+# n_ldpc = 1296
+# d_v = 4
+# d_c = 6
+MAX_LDPC_ITER = 20
 
 BASE_DIR = './BPG-LDPC' 
 DATA_DIR = 'Kodak24'
 BPGDEC_EXECUTABLE = os.path.join(BASE_DIR, 'bpgdec.exe')
 ROOT_DIR = os.path.join(BASE_DIR, DATA_DIR, 'data_resize')
-LDPC_ENCODED_DIR = os.path.join(BASE_DIR, DATA_DIR, 'encode_resize', f'ldpc_encoded{bpp_suffix}')
-BPG_ENCODED_DIR = os.path.join(BASE_DIR, DATA_DIR, 'encode_resize', f'bpg_encoded{bpp_suffix}')
+LDPC_ENCODED_DIR = os.path.join(BASE_DIR, DATA_DIR, f'encode_resize_{n_ldpc}_{d_v}_{d_c}', f'ldpc_encoded{bpp_suffix}')
+BPG_ENCODED_DIR = os.path.join(BASE_DIR, DATA_DIR, f'encode_resize_{n_ldpc}_{d_v}_{d_c}', f'bpg_encoded{bpp_suffix}')
 # DECODED_OUTPUT_DIR = os.path.join(BASE_DIR, DATA_DIR, f'decoded_images{bpp_suffix}')
-RESULTS_DIR = os.path.join(BASE_DIR, DATA_DIR, f'results{bpp_suffix}')
+RESULTS_DIR = os.path.join(BASE_DIR, DATA_DIR, f'results_resize_{n_ldpc}_{d_v}_{d_c}', f'results{bpp_suffix}')
 
 # --- 模拟参数 ---
 SNR_START = 0
 SNR_INTERVAL = 2
-SNR_END = 20 + SNR_INTERVAL
+SNR_END = 24 + SNR_INTERVAL
 SNR_range = np.arange(SNR_START, SNR_END, SNR_INTERVAL)
 
 TRANS_NUM = 10  # 每个SNR点的传输次数
@@ -55,7 +68,7 @@ FA_IM_K = 4           # 活动端口的数量 (必须是2的幂)
 FA_IM_N = 16          # 可用的总端口数量
 FA_IM_Nr = 8          # 接收天线的数量
 FA_IM_M = 64           # QAM调制的阶数 (4 for QPSK, 16 for 16-QAM)
-FA_IM_NUM_H = 100       # 信道实现数量 (信道池大小)
+FA_IM_NUM_H = 500       # 信道实现数量 (信道池大小)
 
 FA_IM_W = 2.0         # 发射端流体天线的总宽度 (米)
 FA_IM_L_PATHS = 10    # 多径信道的路径数量
@@ -202,41 +215,54 @@ def process_single_task(mat_filename, snr, idx_H):
         
         decoded_image_path = os.path.join(RESULTS_DIR, f"{image_base_name}_snr{snr}_H{idx_H}.png")
         
+        psnr_val, msssim_val = None, None
         try:
             execute_command([BPGDEC_EXECUTABLE, '-o', decoded_image_path, temp_bin_path])
+            if os.path.exists(decoded_image_path):
+                decoded_img = Image.open(decoded_image_path).convert('RGB')
+                decoded_tensor = to_tensor(decoded_img).unsqueeze(0).to(DEVICE)
+                
+                psnr_val = calculate_psnr(original_tensor, decoded_tensor, 1.0).item()
+                msssim_val = calculate_ms_ssim(original_tensor, decoded_tensor, ms_ssim_window, 1.0, ms_ssim_weights).item()
+        
         except subprocess.CalledProcessError:
             tqdm.write(f"    -> [PID:{pid}] BPG decoding FAILED for task. Skipping metrics.")
-            if os.path.exists(decoded_image_path):
-                os.remove(decoded_image_path)
-            return (snr, None, None) # BPG解码失败，返回None
         finally:
-             if os.path.exists(temp_bin_path):
-                os.remove(temp_bin_path)
-             
+             if os.path.exists(temp_bin_path): os.remove(temp_bin_path)
+             if os.path.exists(decoded_image_path): os.remove(decoded_image_path)
 
-        if not os.path.exists(decoded_image_path):
-            return (snr, None, None)
+        # 无论成功失败，都写入一行，失败时指标为空
+        psnr_str = f"{psnr_val:.4f}" if psnr_val is not None else ""
+        msssim_str = f"{msssim_val:.4f}" if msssim_val is not None else ""
+        result_line = f"{image_base_name},{snr},{idx_H},{psnr_str},{msssim_str}\n"
 
-        # 计算指标
-        decoded_img = Image.open(decoded_image_path).convert('RGB')
-        decoded_tensor = to_tensor(decoded_img).unsqueeze(0).to(DEVICE)
+        # 使用从父进程继承来的锁来保护文件写入操作
+        LOCK.acquire()
+        try:
+            with open(RESULT_FILE_PATH, 'a') as f:
+                f.write(result_line)
+        finally:
+            LOCK.release() # 确保锁总是被释放
         
-        psnr_val = calculate_psnr(original_tensor, decoded_tensor, 1.0).item()
-        msssim_val = calculate_ms_ssim(original_tensor, decoded_tensor, ms_ssim_window, 1.0, ms_ssim_weights).item()
-        
-        os.remove(decoded_image_path) # 清理中间图片文件
+        if psnr_val is not None:
+             tqdm.write(f"--- [PID:{pid}] Task OK:    {image_base_name} | SNR={snr} | H_idx={idx_H} | PSNR={psnr_val:.4f} ---")
+        # -----------------------------------------------------
 
-        tqdm.write(f"--- [PID:{pid}] Task OK:    {image_base_name} | SNR={snr} | H_idx={idx_H} | PSNR={psnr_val:.4f} ---")
-        return (snr, psnr_val, msssim_val)
+        return "OK" # 只返回一个简单的状态字符串
 
     except Exception as e:
         tqdm.write(f"--- [PID:{pid}] Task FAILED: {image_base_name} | SNR={snr} | H_idx={idx_H} with error: {e} ---")
-        if os.path.exists(decoded_image_path):
-            os.remove(decoded_image_path)
-        return (snr, None, None) # 任何其他异常都表示任务失败
+        result_line = f"{image_base_name},{snr},{idx_H},,FAIL: {e}\n"
+        LOCK.acquire()
+        try:
+            with open(RESULT_FILE_PATH, 'a') as f:
+                f.write(result_line)
+        finally:
+            LOCK.release()
+        return "FAIL"
 
 
-def init_worker(h_matrix, g_matrix, msssim_win, msssim_w):
+def init_worker(h_matrix, g_matrix, msssim_win, msssim_w, channel_obj, result_filepath, lock):
     """
     这个函数会在每个子进程启动时被调用一次。
     它的作用是接收父进程传递过来的数据，并创建子进程专属的全局对象。
@@ -246,23 +272,31 @@ def init_worker(h_matrix, g_matrix, msssim_win, msssim_w):
     # 这样，process_image_all_snrs 函数就能直接访问它们了
     global H, G, k_ldpc, n_actual_ldpc, channel, ms_ssim_window, ms_ssim_weights
 
+    global RESULT_FILE_PATH, LOCK
+
     # --- 初始化LDPC矩阵 ---
     H = h_matrix
     G = g_matrix
     k_ldpc = G.shape[1]
     n_actual_ldpc = G.shape[0]
 
-    # --- 初始化FA-IM信道 ---
-    channel = FA_IM_Channel(
-        K=FA_IM_K, N=FA_IM_N, Nr=FA_IM_Nr, M=FA_IM_M,
-        num_H=FA_IM_NUM_H, W=FA_IM_W, L_paths=FA_IM_L_PATHS, device=DEVICE
-    )
+    # # --- 初始化FA-IM信道 ---
+    # channel = FA_IM_Channel(
+    #     K=FA_IM_K, N=FA_IM_N, Nr=FA_IM_Nr, M=FA_IM_M,
+    #     num_H=FA_IM_NUM_H, W=FA_IM_W, L_paths=FA_IM_L_PATHS, device=DEVICE
+    # )
+
+    channel = channel_obj
     
     # --- 初始化MS-SSIM组件 ---
     ms_ssim_window = msssim_win
     ms_ssim_weights = msssim_w
 
-# 1. 创建一个辅助函数，用于解包参数
+    RESULT_FILE_PATH = result_filepath
+    LOCK = lock
+
+
+# 创建一个辅助函数，用于解包参数
 # 它的作用就是接收一个元组 (arg1, arg2, ...)，然后用 *args 的形式传给你的真实任务函数
 def starmap_helper(args):
     """
@@ -273,11 +307,12 @@ def starmap_helper(args):
 # 主程序入口
 # ==============================================================================
 if __name__ == "__main__":
-    try:
-        multiprocessing.set_start_method('spawn')
-    except RuntimeError:
-        # 如果已经设置过了，可能会抛出 RuntimeError，可以安全地忽略
-        pass
+    # use gpu
+    # try:
+    #     multiprocessing.set_start_method('spawn')
+    # except RuntimeError:
+    #     # 如果已经设置过了，可能会抛出 RuntimeError，可以安全地忽略
+    #     pass
 
     # 在主进程中初始化一次，子进程将继承这些变量
     matrix_load_path = os.path.join(LDPC_ENCODED_DIR, 'ldpc_matrices.npz')
@@ -291,6 +326,13 @@ if __name__ == "__main__":
     msssim_win_main = create_window(11, 3).to(DEVICE)
     msssim_w_main = torch.tensor([0.0448, 0.2856, 0.3001, 0.2363, 0.1333], device=DEVICE)
 
+    print("Creating FA-IM Channel...")
+    channel_main = FA_IM_Channel(
+        K=FA_IM_K, N=FA_IM_N, Nr=FA_IM_Nr, M=FA_IM_M,
+        num_H=FA_IM_NUM_H, W=FA_IM_W, L_paths=FA_IM_L_PATHS, device=DEVICE
+    )
+    print(f"FA-IM Channel initialization complete.")
+
     # 创建输出目录
     os.makedirs(RESULTS_DIR, exist_ok=True)
     
@@ -302,62 +344,73 @@ if __name__ == "__main__":
             for h_idx in range(TRANS_NUM):
                 tasks.append((filename, snr_val, h_idx))
 
-    # --- 3. 使用 multiprocessing.Pool 进行并行处理 ---
+    # --- 使用 multiprocessing.Pool 进行并行处理 ---
     num_processes = min(len(tasks), max(1, multiprocessing.cpu_count() - 10))
     
     start_time = time.time()
 
-    init_args = (h_main, g_main, msssim_win_main, msssim_w_main)
+    results_csv_path = os.path.join(RESULTS_DIR, 'live_results.csv')
+    # 在开始前创建结果文件并写入表头
+    with open(results_csv_path, 'w') as f:
+        f.write("image_name,snr,h_idx,psnr,ms_ssim\n")
+
+    # 创建一个进程安全的锁
+    manager = multiprocessing.Manager()
+    lock = manager.Lock()
+
+    # 将文件路径和锁添加到 init_args
+    init_args = (h_main, g_main, msssim_win_main, msssim_w_main, channel_main, results_csv_path, lock)
+    # ------------------------------------------------------------
+
+    # --- 核心修改: 使用 maxtasksperchild 并只迭代不收集结果 ---
     with multiprocessing.Pool(processes=num_processes,
                               initializer=init_worker,
-                              initargs=init_args) as pool:
-        # 使用 starmap，它会自动将 tasks 列表中的每个元组解包作为参数传给 process_single_task
-        # all_results = pool.starmap(process_single_task, tasks)
-
-        # 1. 使用 imap_unordered 并传入辅助函数
-        # 2. imap_unordered 立即返回一个结果迭代器
+                              initargs=init_args,
+                              maxtasksperchild=100) as pool: # 4. 添加 maxtasksperchild
+        
         results_iterator = pool.imap_unordered(starmap_helper, tasks)
-        # 3. 用 tqdm 包装这个迭代器
-        # 4. 用 list() 消耗掉迭代器，驱动整个过程，并收集所有结果
-        all_results = list(tqdm(results_iterator, total=len(tasks), desc="并发任务进度"))
+        
+        # 只迭代以驱动进度条，不再用 list() 收集结果
+        for _ in tqdm(results_iterator, total=len(tasks), desc="并发任务进度"):
+            pass
     
     # 单线程测试
     # init_worker(h_main, g_main, msssim_win_main, msssim_w_main)
     # all_results = [process_single_task(*tasks[0])]
     
-    total_psnr_results = {snr: [] for snr in SNR_range}
-    total_ms_ssim_results = {snr: [] for snr in SNR_range}
+    try:
+        results_df = pd.read_csv(results_csv_path)
+    except pd.errors.EmptyDataError:
+        print("错误：结果文件为空，无法进行汇总。")
+        sys.exit(1)
+    
+    # 删除psnr列为空的行，这些是解码失败的任务
+    results_df.dropna(subset=['psnr'], inplace=True)
+    # 确保数据类型正确
+    results_df['snr'] = results_df['snr'].astype(int)
+    results_df['psnr'] = results_df['psnr'].astype(float)
+    results_df['ms_ssim'] = results_df['ms_ssim'].astype(float)
 
-    for result in all_results:
-        if result is not None:
-            snr, psnr, msssim = result
-            # 只有当指标不为None时（即任务成功）才添加到列表中
-            if psnr is not None:
-                total_psnr_results[snr].append(psnr)
-            if msssim is not None:
-                total_ms_ssim_results[snr].append(msssim)
+    # 按SNR分组并计算平均值
+    summary = results_df.groupby('snr')[['psnr', 'ms_ssim']].mean().reset_index()
+    summary.rename(columns={'psnr': 'Avg PSNR (dB)', 'ms_ssim': 'Avg MS-SSIM'}, inplace=True)
+    
+    avg_psnr_list = summary['Avg PSNR (dB)'].tolist()
+    avg_ms_ssim_list = summary['Avg MS-SSIM'].tolist()
 
-    # --- 4. 汇总、保存和绘制结果 ---
-    avg_psnr_list, avg_ms_ssim_list = [], []
+    # 打印汇总结果
     print("\n--- Average Performance on Kodak24 Dataset ---")
-    results_text = "SNR (dB),Avg PSNR (dB),Avg MS-SSIM\n"
-    for snr in SNR_range:
-        avg_psnr = np.mean(total_psnr_results[snr]) if total_psnr_results[snr] else 0
-        avg_ms_ssim = np.mean(total_ms_ssim_results[snr]) if total_ms_ssim_results[snr] else 0
-        avg_psnr_list.append(avg_psnr)
-        avg_ms_ssim_list.append(avg_ms_ssim)
-        print(f"SNR: {snr:2d} dB | Avg PSNR: {avg_psnr:.4f} dB | Avg MS-SSIM: {avg_ms_ssim:.4f}")
-        results_text += f"{snr},{avg_psnr:.4f},{avg_ms_ssim:.4f}\n"
-
-    # 保存数值结果到 CSV 文件
-    results_file_path = os.path.join(RESULTS_DIR, 'results.csv')
-    with open(results_file_path, 'w') as f:
-        f.write(results_text)
-    print(f"\nNumeric results saved to {results_file_path}")
+    for index, row in summary.iterrows():
+        print(f"SNR: {int(row['snr']):2d} dB | Avg PSNR: {row['Avg PSNR (dB)']:.4f} dB | Avg MS-SSIM: {row['Avg MS-SSIM']:.4f}")
+    
+    # 保存汇总结果
+    summary_file_path = os.path.join(RESULTS_DIR, 'results.csv')
+    summary.to_csv(summary_file_path, index=False)
+    print(f"\nSummary results saved to {summary_file_path}")
 
     # 绘制并保存PSNR曲线
     plt.figure(figsize=(10, 7))
-    plt.plot(SNR_range, avg_psnr_list, marker='o', linestyle='-', label=f'BPG+LDPC (FA-IM, BPP={TARGET_BPP})')
+    plt.plot(summary['snr'], avg_psnr_list, marker='o', linestyle='-', label=f'BPG+LDPC (FA-IM, BPP={TARGET_BPP})')
     plt.title('PSNR vs. SNR Performance on Kodak24 Dataset')
     plt.xlabel('Signal-to-Noise Ratio (SNR) [dB]')
     plt.ylabel('Average Peak Signal-to-Noise Ratio (PSNR) [dB]')
@@ -370,7 +423,7 @@ if __name__ == "__main__":
 
     # 绘制并保存MS-SSIM曲线
     plt.figure(figsize=(10, 7))
-    plt.plot(SNR_range, avg_ms_ssim_list, marker='s', linestyle='--', color='crimson', label=f'BPG+LDPC (FA-IM, BPP={TARGET_BPP})')
+    plt.plot(summary['snr'], avg_ms_ssim_list, marker='s', linestyle='--', color='crimson', label=f'BPG+LDPC (FA-IM, BPP={TARGET_BPP})')
     plt.title('MS-SSIM vs. SNR Performance on Kodak24 Dataset')
     plt.xlabel('Signal-to-Noise Ratio (SNR) [dB]')
     plt.ylabel('Average MS-SSIM')

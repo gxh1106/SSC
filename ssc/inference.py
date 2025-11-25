@@ -211,17 +211,19 @@ def main():
     model = model.to(device)
 
     K = 4         # 活动端口数 (2 bits)
-    M = 256         # 星座大小 (例如，64-QAM，需要 6 比特符号, 3:1)
+    M = 64         # 星座大小 (例如，64-QAM，需要 6 比特符号, 3:1)
     N = 16         # 总可用端口数
     Nr = 8        # 接收天线数
     # 定义信道物理参数
     W = 2  # 流体天线宽度为W个波长
     L_paths = 10      # 多径数
-    num_H = 2     # 创建num_H个不同的信道实现
+    num_H = 100     # 创建num_H个不同的信道实现
 
     SNR_INTERVAL = 2
     SNR_START = 0
-    SNR_END = 20 + SNR_INTERVAL
+    SNR_END = 24 + SNR_INTERVAL
+    # SNR_START = 10
+    # SNR_END = 20 + SNR_INTERVAL
     snr_range = list(range(SNR_START, SNR_END, SNR_INTERVAL))
 
     codebook_size = opt['network_g']['rq_kwargs']['n_embed']

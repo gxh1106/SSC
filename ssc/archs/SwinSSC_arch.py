@@ -106,16 +106,14 @@ class SwinSSC(nn.Module):
         x_reshaped, feature_quant, loss_commit, embed_idxs, shape_info = self.quantizer.ad(feature, feat_shape=feat_shape)
 
         if self.pass_channel:
-            error_config = {'target_layer': idx_H, 'noise_factor': 10000} # L0层加100倍的噪声
-            # noisy_quant = self.quantizer.feature_pass_channel(embed_idxs, chan_param, noise_config=error_config)
-            # noisy_quant = self.quantizer.feature_pass_channel(embed_idxs, chan_param)
-            noisy_quant = self.quantizer.feature_pass_error(embed_idxs, chan_param, noise_config=error_config)
+            error_config = {'target_layer': idx_H} # L0层channel error
+            # noisy_quant = self.quantizer.feature_pass_error(embed_idxs, chan_param, noise_config=error_config)
 
             # noisy_idxs = channel(embed_idxs, chan_param, idx_H) # 默认选择第0层采用端口索引传输
             # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=True, ssc_idx=0) # 选择第ssc_idx层采用端口索引传输
-            # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=True, ssc_adapt=True) # 自适应索引分流
-            # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=False) # 无非均等保护，EEP方案
-            # noisy_quant = self.quantizer.embed(noisy_idxs)
+            noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=True, ssc_adapt=True) # 自适应索引分流
+            # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=False) # without stream splitting
+            noisy_quant = self.quantizer.embed(noisy_idxs)
         else:
             noisy_quant = feature_quant
 

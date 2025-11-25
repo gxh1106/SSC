@@ -196,7 +196,7 @@ class FA_IM_Channel(nn.Module):
         mask = 2**torch.arange(num_bits - 1, -1, -1, device=self.device)
         return decimal.unsqueeze(-1).bitwise_and(mask).ne(0).long()
 
-    def forward(self, bits: torch.Tensor, snr_db: float, idx_H: int = 0, batch_size: int = 4096) -> torch.Tensor:
+    def forward(self, bits: torch.Tensor, snr_db: float, idx_H: int = 0, batch_size: int = 65536) -> torch.Tensor:
         """
         Processes bits through the FA-IM channel and returns LLRs.
         Uses batching to manage memory for large bitstreams.

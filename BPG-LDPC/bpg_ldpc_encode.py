@@ -15,16 +15,16 @@ import multiprocessing # 1. 导入并行处理库
 TARGET_BPP = 6.0
 bpp_suffix = f"_bpp{TARGET_BPP}"
 # --- LDPC 参数 ---
-n_ldpc = 50
-d_v = 3
-d_c = 5
+n_ldpc = 1944 # 6144 for 5g
+d_v = 23
+d_c = 24
 # --- 路径设置 ---
 BASE_DIR = './BPG-LDPC'
 DATA_DIR = 'Kodak24'
 BPGENC_EXECUTABLE = os.path.join(BASE_DIR, 'bpgenc.exe')
 ROOT_DIR = os.path.join(BASE_DIR, DATA_DIR, 'data_resize')
-SAVE_DIR_BPG = os.path.join(BASE_DIR, DATA_DIR, 'encode_resize', f'bpg_encoded{bpp_suffix}')
-SAVE_DIR_LDPC = os.path.join(BASE_DIR, DATA_DIR, 'encode_resize', f'ldpc_encoded{bpp_suffix}')
+SAVE_DIR_BPG = os.path.join(BASE_DIR, DATA_DIR, f'encode_resize_{n_ldpc}_{d_v}_{d_c}', f'bpg_encoded{bpp_suffix}')
+SAVE_DIR_LDPC = os.path.join(BASE_DIR, DATA_DIR, f'encode_resize_{n_ldpc}_{d_v}_{d_c}', f'ldpc_encoded{bpp_suffix}')
 
 # ==============================================================================
 # 辅助函数
@@ -204,9 +204,13 @@ if __name__ == "__main__":
     # print(f"Starting parallel processing with {num_processes} processes...\n")
     
     start_time = time.time()
+
     with multiprocessing.Pool(processes=num_processes) as pool:
         results = pool.map(process_image, items_to_process)
     
+    # debug
+    # results = [process_image(items_to_process[0])]
+
     total_time = time.time() - start_time
     
     print("\n" + "="*50)
