@@ -490,28 +490,57 @@ class FA_SISO_Channel(nn.Module):
     def _generate_qam_constellation(self) -> torch.Tensor:
         """
         生成一个单位平均功率且采用格雷映射的QAM星座点集。
+        支持 Square QAM (16, 64, 256...) 和 Rectangular QAM (32, 128...)。
         """
-        assert math.sqrt(self.M).is_integer(), "M必须是完全平方数，例如4, 16, 64。"
-        # 1. 生成一维格雷码索引
-        m_1d = int(math.log2(math.sqrt(self.M)))
-        gray_map_1d = torch.zeros(2**m_1d, dtype=torch.long)
-        for i in range(2**m_1d):
-            gray_map_1d[i] = i ^ (i >> 1)
-        # 2. 创建星座点网格
-        sqrt_m = int(math.sqrt(self.M))
-        axis_points = torch.arange(-(sqrt_m - 1), sqrt_m, 2, device=self.device)
-        # 3. 生成二维格雷映射的星座点
-        constellation = torch.zeros(self.M, dtype=torch.cfloat, device=self.device)
-        for i in range(sqrt_m): # 实部索引
-            for j in range(sqrt_m): # 虚部索引
-                # 将常规二进制索引 (i, j) 映射到格雷码索引
-                gray_i = gray_map_1d[i]
-                gray_j = gray_map_1d[j]
-                # 计算最终的十进制索引
-                dec_index = i * sqrt_m + j
-                constellation[dec_index] = axis_points[gray_i] + 1j * axis_points[gray_j]
+        # 1. 检查 M 是否为 2 的幂
+        m_log2 = math.log2(self.M)
+        assert m_log2.is_integer(), "M 必须是 2 的幂，例如 4, 16, 32, 64, 128。"
+        m_bits = int(m_log2)
+
+        # 2. 确定实部和虚部的比特数 (支持非正方形星座)
+        # 如果是奇数比特(如32QAM -> 5 bits)，实部多分1 bit (8x4)
+        # n_i: 实部比特数, n_q: 虚部比特数
+        n_i = (m_bits + 1) // 2  
+        n_q = m_bits - n_i       
         
-        # 4. 归一化以实现单位平均功率
+        len_i = 2 ** n_i  # 实部轴上的点数 (例如 32QAM 为 8)
+        len_q = 2 ** n_q  # 虚部轴上的点数 (例如 32QAM 为 4)
+
+        # 3. 定义生成一维格雷码索引的辅助函数
+        def get_gray_map(bit_count):
+            length = 2 ** bit_count
+            gray_map = torch.zeros(length, dtype=torch.long)
+            for i in range(length):
+                gray_map[i] = i ^ (i >> 1)
+            return gray_map
+
+        gray_map_i = get_gray_map(n_i)
+        gray_map_q = get_gray_map(n_q)
+
+        # 4. 创建坐标轴点
+        # 注意：PAM 坐标点通常为 -(L-1), ..., (L-1)，步长为 2
+        axis_points_i = torch.arange(-(len_i - 1), len_i, 2, device=self.device, dtype=torch.float)
+        axis_points_q = torch.arange(-(len_q - 1), len_q, 2, device=self.device, dtype=torch.float)
+
+        # 5. 生成二维格雷映射的星座点
+        constellation = torch.zeros(self.M, dtype=torch.cfloat, device=self.device)
+        
+        # 使用嵌套循环填充星座点 (也可以使用广播机制加速，但为了保持原代码逻辑清晰，这里沿用循环)
+        # 这里的索引逻辑假设高位比特对应实部，低位比特对应虚部
+        for i in range(len_i):      # 实部索引
+            for j in range(len_q):  # 虚部索引
+                # 获取对应的格雷码索引
+                gray_idx_i = gray_map_i[i]
+                gray_idx_j = gray_map_q[j]
+                
+                # 计算最终的十进制索引
+                # 索引组合方式：实部索引 * 虚部长度 + 虚部索引
+                dec_index = i * len_q + j
+                
+                # 组合复数星座点
+                constellation[dec_index] = axis_points_i[gray_idx_i] + 1j * axis_points_q[gray_idx_j]
+
+        # 6. 归一化以实现单位平均功率
         power = torch.mean(torch.abs(constellation)**2)
         return constellation / torch.sqrt(power)
 
