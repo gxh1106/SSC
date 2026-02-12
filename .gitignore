@@ -149,5 +149,6 @@ rqvae_transformer/
 # 忽略所有以 output 开头的文件夹（包含内容）
 /output*/
 BPG-LDPC/
+libbpg-0.9.8.tar.gz
 inference/
 options/old/
