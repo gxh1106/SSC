@@ -5,7 +5,7 @@ So before reproducing the SSC network, please install the BasicSR development en
 
 ### Installation Steps
 
-Since this project involves modifications to BasicSR, please use the **Install from a local clone** method.
+Since this project involves modifications to BasicSR, please use the [**Install from a local clone**](https://github.com/XPixelGroup/BasicSR/blob/master/docs/INSTALL.md#install-from-a-local-clone) method.
 
 1. **Install dependent packages**
 
