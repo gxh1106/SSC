@@ -99,7 +99,7 @@ def plot_results(results_folders, labels, save_dir='.', file_suffix=''):
 
 # --- 使用示例 ---
 if __name__ == '__main__':
-    subfolder = 'bpp1_32C_16E_2D'  # 子文件夹名称
+    subfolder = 'bpp4_64C_16E_4D'  # 子文件夹名称
     file_suffix = subfolder.split('_')[0]  # 提取 bpp 部分作为文件后缀
     # 1. 设置包含 .csv 文件的结果文件夹路径
     # 请将这里的路径替换为您自己的实际路径
@@ -108,7 +108,7 @@ if __name__ == '__main__':
         f'output/16xD/{subfolder}/SSC_woIM',
         f'output/16xD/{subfolder}/SSC_woSS',
         f'output/16xD/{subfolder}/sDAC_FA-IM',
-        f'output/16xD/{subfolder}/BPG+LDPC',
+        f'output/16xD/bpp3/BPG+LDPC',
     ]
 
     # 2. 为每条曲线设置一个图例标签
@@ -116,7 +116,7 @@ if __name__ == '__main__':
         'SSC',
         'SSC w/o IM',
         'SSC w/o SS',
-        'sDAC with FA-IM',
+        'sDAC',
         'BPG+LDPC',
     ]
 

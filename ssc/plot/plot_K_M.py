@@ -48,7 +48,7 @@ def plot_faim_performance(root_dir, target_k, target_m, save_dir='.', max_snr=20
         },
         {
             'folder': 'sDAC_FA-IM',  # 文件夹名
-            'label': 'sDAC with FA-IM', # 图例名
+            'label': 'sDAC', # 图例名
             'color': '#1f77b4',      # 红色 (重点推荐)
             'marker': 's',           # 星号
             'linestyle': '-',        # 实线
@@ -162,8 +162,8 @@ if __name__ == '__main__':
     # ==========================================
     # 3. 指定参数
     # ==========================================
-    target_k=2
-    target_m=256
+    target_k=4
+    target_m=16
 
     max_snr=20
     # 场景 A: 绘制 2K, 16M 的结果

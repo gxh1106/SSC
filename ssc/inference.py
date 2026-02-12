@@ -211,7 +211,7 @@ def main():
     model = model.to(device)
 
     K = 4         # 活动端口数 (2 bits)
-    M = 16         # 星座大小 (例如，64-QAM，需要 6 比特符号, 3:1)
+    M = 64         # 星座大小 (例如，64-QAM，需要 6 比特符号, 3:1)
 
     N = 16         # 总可用端口数
     Nr = 8        # 接收天线数
@@ -230,7 +230,7 @@ def main():
     codebook_size = opt['network_g']['rq_kwargs']['n_embed']
     fa_im_system = FA_IM_Channel(K=K, M=M, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device, codebook_size=codebook_size)
 
-    M_fas_simo = 1024  # SIMO FAS 的星座大小
+    M_fas_simo = 256  # SIMO FAS 的星座大小
     # M_fas_simo = 16
     # fa_simo_system = FA_SISO_Channel(M=M_fas_simo, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device, codebook_size=codebook_size)
 
