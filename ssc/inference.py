@@ -113,6 +113,8 @@ def main():
     parser.add_argument('--model_path', type=str, required=True, help='Path to the pre-trained model file (.pth).')
     parser.add_argument('--input', type=str, required=True, help='Input test image folder (Ground Truth), e.g., /path/to/kodak24.')
     parser.add_argument('--output', type=str, default='results/SwinSSC_PSNR_Analysis', help='Output folder for the plot and results.')
+    parser.add_argument('--csi_error_tx', type=float, default=0.0, help='CSI error level at the transmitter (0.0 means perfect CSI).')
+    parser.add_argument('--csi_error_rx', type=float, default=0.0, help='CSI error level at the receiver (0.0 means perfect CSI).')
     # parser.add_argument('--tile', type=int, default=None, help='Tile size, None for no tile during testing.')
     # parser.add_argument('--tile_overlap', type=int, default=32, help='Overlapping of different tiles.')
     args = parser.parse_args()
@@ -220,6 +222,9 @@ def main():
     L_paths = 10      # 多径数
     num_H = 100     # 创建num_H个不同的信道实现
 
+    CSI_error_TX = args.csi_error_tx  # 发送端CSI误差
+    CSI_error_RX = args.csi_error_rx  # 接收端CSI误差
+
     SNR_INTERVAL = 2
     SNR_START = 0
     SNR_END = 24 + SNR_INTERVAL
@@ -228,7 +233,7 @@ def main():
     snr_range = list(range(SNR_START, SNR_END, SNR_INTERVAL))
 
     codebook_size = opt['network_g']['rq_kwargs']['n_embed']
-    fa_im_system = FA_IM_Channel(K=K, M=M, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device, codebook_size=codebook_size)
+    fa_im_system = FA_IM_Channel(K=K, M=M, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device, codebook_size=codebook_size, CSI_error_TX=CSI_error_TX, CSI_error_RX=CSI_error_RX)
 
     M_fas_simo = 256  # SIMO FAS 的星座大小
     # M_fas_simo = 16

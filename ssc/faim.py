@@ -12,7 +12,7 @@ class FA_IM_Channel(nn.Module):
     最终输出带噪声的二进制张量。
     """
 
-    def __init__(self, K: int, N: int, Nr: int, M: int, num_H: int, W: float, L_paths: int, device: str = 'cuda', codebook_size: int = 16):
+    def __init__(self, K: int, N: int, Nr: int, M: int, num_H: int, W: float, L_paths: int, device: str = 'cuda', codebook_size: int = 16, CSI_error_TX: float = 0.0, CSI_error_RX: float = 0.0):
         """
         初始化FA-IM信道模块。
 
@@ -24,6 +24,9 @@ class FA_IM_Channel(nn.Module):
             H (torch.Tensor): 预计算的信道系数张量。
                                形状应为 (num_realizations, Nr, N)。
             device (str): 计算设备 ('cuda' 或 'cpu')。
+            codebook_size (int): 输入索引的码本大小，决定了每个输入索引的比特数。
+            CSI_error_TX (float): 发射端CSI误差的标准差。
+            CSI_error_RX (float): 接收端CSI误差的标准差。
         """
         super().__init__()
 
@@ -37,6 +40,8 @@ class FA_IM_Channel(nn.Module):
         self.device = device
         # 假设输入的embedding_indices范围是0-15
         self.bits_per_input_index = int(math.log2(codebook_size))
+        self.CSI_error_TX = CSI_error_TX
+        self.CSI_error_RX = CSI_error_RX
 
         # 索引比特数
         self.m_index = int(math.log2(self.K))
@@ -109,12 +114,17 @@ class FA_IM_Channel(nn.Module):
         optimal_channels = []
         # 对池中的每一个信道实现进行操作
         for h_realization in H_pool:
+            if self.CSI_error_TX > 0.0:
+                h_realization_err = math.sqrt(1 - self.CSI_error_TX ** 2) * h_realization + self.CSI_error_TX * math.sqrt(0.5) * (torch.randn_like(h_realization) + 1j * torch.randn_like(h_realization))
+            else:
+                h_realization_err = h_realization
+
             max_metric = -float('inf')
             best_indices = None
             # 遍历所有可能的K端口组合
             for i in range(all_combinations.shape[0]):
                 current_indices = all_combinations[i, :]
-                H_temp = h_realization[:, current_indices]
+                H_temp = h_realization_err[:, current_indices]
                 metric_matrix = torch.eye(self.K, device=self.device) + (1/self.K) * (H_temp.T.conj() @ H_temp)
                 _sign, logabsdet = torch.slogdet(metric_matrix)
                 metric = logabsdet.item()
@@ -295,7 +305,11 @@ class FA_IM_Channel(nn.Module):
         # 预计算解码查找表 y = Hx
         # (Nr, K) @ (K, K*M) -> (Nr, K*M) 
         Hs = self.Hs_pool[idx_H]  # Shape: (Nr, K)
-        decode_lookup_table = Hs @ self.all_possible_x.T # Shape: (Nr, K*M)
+        if self.CSI_error_RX > 0.0:
+            Hs_err = math.sqrt(1 - self.CSI_error_RX ** 2) * Hs + self.CSI_error_RX * math.sqrt(0.5) * (torch.randn_like(Hs) + 1j * torch.randn_like(Hs))
+        else:
+            Hs_err = Hs
+        decode_lookup_table = Hs_err @ self.all_possible_x.T # Shape: (Nr, K*M)
 
         # y_noiseless 的形状是 (Nr, num_frames)
         y_noiseless = Hs @ x

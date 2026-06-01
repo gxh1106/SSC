@@ -106,7 +106,8 @@ class SwinSSC(nn.Module):
         x_reshaped, feature_quant, loss_commit, embed_idxs, shape_info = self.quantizer.ad(feature, feat_shape=feat_shape)
 
         if self.pass_channel:
-            error_config = {'target_layer': idx_H} # L0层channel error
+            idx_layer = 0 # 选择第idx_layer层采用端口索引传输
+            error_config = {'target_layer': idx_layer} # L0层channel error
             # noisy_quant = self.quantizer.feature_pass_error(embed_idxs, chan_param, noise_config=error_config)
 
             # noisy_idxs = channel(embed_idxs, chan_param, idx_H) # 默认选择第0层采用端口索引传输
