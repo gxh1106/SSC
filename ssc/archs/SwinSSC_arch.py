@@ -63,7 +63,7 @@ class SwinSSC(nn.Module):
         CBR = self.quantizer.embed_dim * self.quantizer.rq_depth / (H * W * 3)
 
         feat_shape = (H_feat, W_feat) if not self.training else None
-        x_reshaped, feature_quant, loss_commit, embed_idxs, shape_info = self.quantizer.ad(feature, feat_shape=feat_shape)
+        x_reshaped, feature_quant, loss_commit, embed_idxs, shape_info = self.quantizer.ad(feature, feat_shape=feat_shape, chan_param=chan_param)
 
         if self.pass_channel:
             noisy_quant = self.quantizer.feature_pass_channel(embed_idxs, chan_param)
@@ -71,7 +71,10 @@ class SwinSSC(nn.Module):
             noisy_quant = feature_quant
 
         noisy_quant = x_reshaped + (noisy_quant - x_reshaped).detach()
-        feature_dequant = self.quantizer.da(noisy_quant, shape_info)
+        if self.quantizer.trainable_bit_flip_prob:
+            feature_dequant = self.quantizer.mvq_da(noisy_quant, shape_info)
+        else:
+            feature_dequant = self.quantizer.da(noisy_quant, shape_info)
 
         # loss_commit += (feature_dequant - feature).pow(2.0).mean()
 
@@ -103,7 +106,7 @@ class SwinSSC(nn.Module):
         CBR = H_feat * W_feat * self.quantizer.embed_dim * self.quantizer.rq_depth / (H * W * 3 * 8)
 
         feat_shape = (H_feat, W_feat) if not self.training else None
-        x_reshaped, feature_quant, loss_commit, embed_idxs, shape_info = self.quantizer.ad(feature, feat_shape=feat_shape)
+        x_reshaped, feature_quant, loss_commit, embed_idxs, shape_info = self.quantizer.ad(feature, feat_shape=feat_shape, chan_param=chan_param)
 
         if self.pass_channel:
             idx_layer = 0 # 选择第idx_layer层采用端口索引传输
@@ -112,13 +115,20 @@ class SwinSSC(nn.Module):
 
             # noisy_idxs = channel(embed_idxs, chan_param, idx_H) # 默认选择第0层采用端口索引传输
             # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=True, ssc_idx=0) # 选择第ssc_idx层采用端口索引传输
-            noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=True, ssc_adapt=True) # 自适应索引分流
-            # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=False) # without stream splitting
-            noisy_quant = self.quantizer.embed(noisy_idxs)
+            if self.quantizer.trainable_bit_flip_prob:
+                noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=False)
+                noisy_quant = self.quantizer.embed(noisy_idxs, chan_param=chan_param)
+            else:
+                noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=True, ssc_adapt=True) # 自适应索引分流
+                # noisy_idxs = channel(embed_idxs, chan_param, idx_H, ssc=False) # without stream splitting
+                noisy_quant = self.quantizer.embed(noisy_idxs, chan_param=chan_param)
         else:
             noisy_quant = feature_quant
 
-        feature_dequant = self.quantizer.da(noisy_quant, shape_info)
+        if self.quantizer.trainable_bit_flip_prob:
+            feature_dequant = self.quantizer.mvq_da(noisy_quant, shape_info)
+        else:
+            feature_dequant = self.quantizer.da(noisy_quant, shape_info)
 
         recon_image = self.decoder(feature_dequant, chan_param, self.model)
 

@@ -231,10 +231,12 @@ class SSCModel(BaseModel):
             
         self.optimizer_g.zero_grad()
         self.output, CBR, chan_param, l_commit, embed_idxs = self.net_g(self.input)
+        l_bitflip_reg = self.get_bare_model(self.net_g).quantizer.bit_flip_regularization_loss()
 
-        l_total = self.commit_loss_weight * l_commit
+        l_total = self.commit_loss_weight * l_commit + l_bitflip_reg
         loss_dict = OrderedDict()
         loss_dict['l_commit'] = l_commit
+        loss_dict['l_bitflip_reg'] = l_bitflip_reg
         # pixel loss
         if self.cri_pix:
             l_pix = self.cri_pix(self.output, self.input)

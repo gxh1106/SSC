@@ -6,18 +6,25 @@ set -e
 # export CUDA_VISIBLE_DEVICES="7"
 # export CUDA_VISIBLE_DEVICES="6"
 # export CUDA_VISIBLE_DEVICES="5"
-export CUDA_VISIBLE_DEVICES="4"
+# export CUDA_VISIBLE_DEVICES="4"
 # export CUDA_VISIBLE_DEVICES="3"
-# export CUDA_VISIBLE_DEVICES="2"
+export CUDA_VISIBLE_DEVICES="2"
 # export CUDA_VISIBLE_DEVICES="1"
 # export CUDA_VISIBLE_DEVICES="0"
 
 CSI_ERROR_TX=0.0  # 发送端CSI误差水平
-CSI_ERROR_RX=0.4  # 接收端CSI误差水平
+CSI_ERROR_RX=0.0  # 接收端CSI误差水平
 
-CONFIG_FILE="experiments/16xD/train_SSC_bpp2_32C_16E_4D/train_SSC_bpp2_32C_16E_4D_from_pretrain.yml"
-MODEL_PATH="experiments/16xD/train_SSC_bpp2_32C_16E_4D/models/net_g_latest.pth"
-OUTPUT_DIR="output/CSI/bpp2_32C_16E_4D/CSIerr_TX${CSI_ERROR_TX}_RX${CSI_ERROR_RX}"
+
+CONFIG_FILE="experiments/train_MVQ_bbp2_32C_4V_65536E/train_MVQ_bpp2_32C_4V_65536E_from_pretrain.yml"
+MODEL_PATH="experiments/train_MVQ_bbp2_32C_4V_65536E/models/net_g_55000.pth"
+OUTPUT_DIR="output/baseline/bpp2_32C_16E_4D/MVQ_4V_65536E"
+# CONFIG_FILE="experiments/train_MVQ_bbp2_32C_4V_16384E/train_MVQ_bpp2_32C_4V_16384E_from_pretrain.yml"
+# MODEL_PATH="experiments/train_MVQ_bbp2_32C_4V_16384E/models/net_g_25000.pth"
+# OUTPUT_DIR="output/baseline/bpp2_32C_16E_4D/MVQ_4V_16384E"
+# CONFIG_FILE="experiments/16xD/train_SSC_bpp2_32C_16E_4D/train_SSC_bpp2_32C_16E_4D_from_pretrain.yml"
+# MODEL_PATH="experiments/16xD/train_SSC_bpp2_32C_16E_4D/models/net_g_latest.pth"
+# OUTPUT_DIR="output/CSI/bpp2_32C_16E_4D/CSIerr_TX${CSI_ERROR_TX}_RX${CSI_ERROR_RX}"
 # CONFIG_FILE="experiments/16xD/train_SSC_bpp4_64C_16E_4D/train_SSC_bpp4_64C_16E_4D_from_pretrain.yml"
 # MODEL_PATH="experiments/16xD/train_SSC_bpp4_64C_16E_4D/models/net_g_latest.pth"
 # OUTPUT_DIR="output/16xD/bpp4_64C_16E_4D/SSC_woIM"

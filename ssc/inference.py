@@ -233,11 +233,11 @@ def main():
     snr_range = list(range(SNR_START, SNR_END, SNR_INTERVAL))
 
     codebook_size = opt['network_g']['rq_kwargs']['n_embed']
-    fa_im_system = FA_IM_Channel(K=K, M=M, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device, codebook_size=codebook_size, CSI_error_TX=CSI_error_TX, CSI_error_RX=CSI_error_RX)
+    # fa_im_system = FA_IM_Channel(K=K, M=M, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device, codebook_size=codebook_size, CSI_error_TX=CSI_error_TX, CSI_error_RX=CSI_error_RX)
 
     M_fas_simo = 256  # SIMO FAS 的星座大小
     # M_fas_simo = 16
-    # fa_simo_system = FA_SISO_Channel(M=M_fas_simo, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device, codebook_size=codebook_size)
+    fa_simo_system = FA_SISO_Channel(M=M_fas_simo, N=N, Nr=Nr, num_H=num_H, W=W, L_paths=L_paths, device=device, codebook_size=codebook_size)
 
     os.makedirs(args.output, exist_ok=True)
 
@@ -284,8 +284,8 @@ def main():
             ms_ssim_per_channel = []
             for idx_H in range(num_H):
                 with torch.no_grad():
-                    output = model.forward_faim(img_gt, given_SNR=snr, channel=fa_im_system, idx_H=idx_H)[0]
-                    # output = model.forward_faim(img_gt, given_SNR=snr, channel=fa_simo_system, idx_H=idx_H)[0]
+                    # output = model.forward_faim(img_gt, given_SNR=snr, channel=fa_im_system, idx_H=idx_H)[0]
+                    output = model.forward_faim(img_gt, given_SNR=snr, channel=fa_simo_system, idx_H=idx_H)[0]
                     psnr_val = calculate_psnr(img_gt, output)
                     psnr_per_channel.append(psnr_val.item())
                     ms_ssim_val = calculate_ms_ssim(img_gt, output, window=msssim_window, data_range=1.0, weights=msssim_weights)

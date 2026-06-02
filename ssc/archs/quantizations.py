@@ -327,7 +327,13 @@ class RQBottleneck(nn.Module):
                  decay=0.99,
                  shared_codebook=False,
                  restart_unused_codes=True,
-                 unembed_dim=None
+                 unembed_dim=None,
+                 trainable_bit_flip_prob=False,
+                 bit_flip_prob_init=3.9e-6,
+                 bit_flip_prob_min=3.9e-6,
+                 bit_flip_prob_max=0.5,
+                 bit_flip_reg_weight=0.0,
+                 bit_flip_reg_eps=1e-12
                  ):
         super().__init__()
 
@@ -347,6 +353,10 @@ class RQBottleneck(nn.Module):
                                     with list types of momentums or sizes: Change it into int")
 
         self.restart_unused_codes = restart_unused_codes
+        self.trainable_bit_flip_prob = trainable_bit_flip_prob
+        self.bit_flip_prob_init = float(bit_flip_prob_init)
+        self.bit_flip_prob_max = float(bit_flip_prob_max)
+        self.bit_flip_reg_eps = float(bit_flip_reg_eps)
         self.n_embed = n_embed if isinstance(n_embed, Iterable) else [n_embed for _ in range(self.rq_depth)]
         self.decay = decay if isinstance(decay, Iterable) else [decay for _ in range(self.rq_depth)]
         assert len(self.n_embed) == self.rq_depth
@@ -384,6 +394,107 @@ class RQBottleneck(nn.Module):
         # self.channel = BSC_channel(stochastic=False, bit_flip_prob=3.9e-6)
         self.channel = BSC_channel(bit_flip_prob=3.9e-6)
         self.num_bits_per_level = [(n_embed_i - 1).bit_length() for n_embed_i in self.n_embed[:self.rq_depth]]
+
+        bit_flip_prob_min_values = bit_flip_prob_min
+        if isinstance(bit_flip_prob_min_values, Iterable) and not isinstance(bit_flip_prob_min_values, (str, bytes)):
+            bit_flip_prob_min_values = list(bit_flip_prob_min_values)
+            assert len(bit_flip_prob_min_values) == self.rq_depth
+            self.register_buffer('bit_flip_prob_min', torch.tensor(bit_flip_prob_min_values, dtype=torch.float32))
+        else:
+            self.register_buffer('bit_flip_prob_min', torch.full((self.rq_depth,), float(bit_flip_prob_min_values), dtype=torch.float32))
+
+        bit_flip_reg_weight_values = bit_flip_reg_weight
+        if isinstance(bit_flip_reg_weight_values, Iterable) and not isinstance(bit_flip_reg_weight_values, (str, bytes)):
+            bit_flip_reg_weight_values = list(bit_flip_reg_weight_values)
+            assert len(bit_flip_reg_weight_values) == self.rq_depth
+            self.register_buffer('bit_flip_reg_weight', torch.tensor(bit_flip_reg_weight_values, dtype=torch.float32))
+        else:
+            self.register_buffer('bit_flip_reg_weight', torch.full((self.rq_depth,), float(bit_flip_reg_weight_values), dtype=torch.float32))
+
+        bit_flip_prob_min_tensor = self.bit_flip_prob_min
+        bit_flip_reg_weight_tensor = self.bit_flip_reg_weight
+
+        init_prob = torch.full((self.rq_depth,), self.bit_flip_prob_init, dtype=torch.float32)
+        bit_flip_prob_max_tensor = torch.full_like(init_prob, self.bit_flip_prob_max)
+        init_prob = torch.maximum(init_prob, bit_flip_prob_min_tensor)
+        init_prob = torch.minimum(init_prob, bit_flip_prob_max_tensor)
+        if self.trainable_bit_flip_prob:
+            bit_flip_prob_min_eps = bit_flip_prob_min_tensor + 1e-12
+            bit_flip_prob_max_eps = torch.full_like(init_prob, self.bit_flip_prob_max - 1e-12)
+            init_prob = torch.maximum(init_prob, bit_flip_prob_min_eps)
+            init_prob = torch.minimum(init_prob, bit_flip_prob_max_eps)
+            init_logits = torch.log(init_prob / (1.0 - init_prob))
+            self.bit_flip_logits = nn.Parameter(init_logits)
+        else:
+            self.register_buffer('bit_flip_probs', init_prob)
+
+    def _is_mvq_mode(self):
+        return bool(self.trainable_bit_flip_prob)
+
+    def _select_mvq_level(self, chan_param):
+        bit_flip_probs = self.get_bit_flip_probs()
+        p_base = calculate_p_from_snr_db(chan_param).to(device=bit_flip_probs.device, dtype=bit_flip_probs.dtype)
+        return int(torch.argmin(torch.abs(bit_flip_probs - p_base)).item())
+
+    def mvq_quantize(self, x, chan_param):
+        mvq_level = self._select_mvq_level(chan_param)
+        quant, embed_idx = self.codebooks[mvq_level](x)
+        return [quant], embed_idx.unsqueeze(-1), mvq_level
+
+    def mvq_embed(self, noisy_idxs, chan_param):
+        mvq_level = self._select_mvq_level(chan_param)
+        if noisy_idxs.ndim == 2:
+            noisy_idxs = noisy_idxs[:, 0]
+        return self.codebooks[mvq_level].embed(noisy_idxs)
+
+    def mvq_feature_pass_channel(self, embed_idxs, chan_param, noise_config=None):
+        mvq_level = self._select_mvq_level(chan_param)
+
+        if embed_idxs.ndim == 2:
+            embed_idxs = embed_idxs[:, 0]
+
+        num_bits = self.num_bits_per_level[mvq_level]
+        binary_tensor = decimal_to_binary_rows(embed_idxs, num_bits)
+
+        p_final = self.get_bit_flip_probs()[mvq_level]
+        if noise_config and noise_config.get('target_layer') == mvq_level:
+            noise_factor = noise_config.get('noise_factor', 1.0)
+            p_final = p_final * noise_factor
+
+        p_final = torch.maximum(p_final, self.bit_flip_prob_min[mvq_level].to(device=binary_tensor.device))
+        p_final = torch.minimum(p_final, p_final.new_tensor(self.bit_flip_prob_max))
+
+        channel_output = self.channel(binary_tensor, bit_flip_prob=p_final)
+        noisy_bits = channel_output['out']
+
+        noisy_indices = binary_rows_to_decimal(noisy_bits)
+        noisy_indices = torch.clamp(noisy_indices, 0, self.n_embed[mvq_level] - 1)
+        return self.codebooks[mvq_level].embed(noisy_indices)
+
+    def get_bit_flip_probs(self):
+        if self.trainable_bit_flip_prob:
+            raw_logits = self.bit_flip_logits + 0.0
+            
+            probs = torch.sigmoid(raw_logits)
+            bit_flip_prob_min = self.bit_flip_prob_min.to(device=raw_logits.device)
+            probs = bit_flip_prob_min + (self.bit_flip_prob_max - bit_flip_prob_min) * probs
+        else:
+            probs = self.bit_flip_probs
+            bit_flip_prob_min = self.bit_flip_prob_min.to(device=probs.device)
+            
+        bit_flip_prob_max = torch.full_like(probs, self.bit_flip_prob_max)
+        probs = torch.maximum(probs, bit_flip_prob_min)
+        probs = torch.minimum(probs, bit_flip_prob_max)
+        return probs
+
+    def bit_flip_regularization_loss(self):
+        if (not self.trainable_bit_flip_prob) or (self.bit_flip_reg_weight.max().item() <= 0):
+            return self.bit_flip_reg_weight.new_zeros(())
+
+        probs = self.get_bit_flip_probs()
+        reg_terms = probs * torch.log(probs.clamp_min(self.bit_flip_reg_eps))
+        weighted_reg = self.bit_flip_reg_weight.to(device=probs.device, dtype=probs.dtype) * reg_terms
+        return weighted_reg.mean()
 
     def to_code_shape(self, x):
         # 输入形状为 (B, L, C)
@@ -436,12 +547,21 @@ class RQBottleneck(nn.Module):
         embed_idxs = torch.cat(embed_idxs_list, dim=-1)
         return quant_list, embed_idxs
 
-    def forward(self, x):
+    def forward(self, x, chan_param=None):
         B, L, C = x.shape
         x_reshaped = self.to_code_shape(x)
-        quant_list, embed_idxs = self.quantize(x_reshaped)
+        if self._is_mvq_mode():
+            if chan_param is None:
+                raise ValueError('chan_param is required for MVQ mode')
+            quant_list, embed_idxs, _ = self.mvq_quantize(x_reshaped, chan_param)
+        else:
+            quant_list, embed_idxs = self.quantize(x_reshaped)
 
         commitment_loss = self.compute_commitment_loss(x_reshaped, quant_list)
+        # === 新增：建立虚拟梯度连接防止 DDP 标记两次 ===
+        if self.trainable_bit_flip_prob:
+            commitment_loss = commitment_loss + self.bit_flip_logits.sum() * 0.0
+
         quants_trunc = self.to_latent_shape(quant_list[-1], B, L)
         quants_trunc = x + (quants_trunc - x).detach()
 
@@ -463,11 +583,20 @@ class RQBottleneck(nn.Module):
         commitment_loss = torch.mean(torch.stack(loss_list1))
         return commitment_loss
     
-    def ad(self, x, feat_shape=None):
+    def ad(self, x, feat_shape=None, chan_param=None):
         shape_info = x.shape
         x_reshaped = self.to_code_shape(x)
-        quant_list, embed_idxs = self.quantize(x_reshaped)
+        if self._is_mvq_mode():
+            if chan_param is None:
+                raise ValueError('chan_param is required for MVQ mode')
+            quant_list, embed_idxs, _ = self.mvq_quantize(x_reshaped, chan_param)
+        else:
+            quant_list, embed_idxs = self.quantize(x_reshaped)
         commitment_loss = self.compute_commitment_loss(x_reshaped, quant_list)
+
+        # === 新增：建立虚拟梯度连接防止 DDP 标记两次 ===
+        if self.trainable_bit_flip_prob:
+            commitment_loss = commitment_loss + self.bit_flip_logits.sum() * 0.0
 
         return x_reshaped, quant_list[-1], commitment_loss, embed_idxs, shape_info
     
@@ -476,6 +605,9 @@ class RQBottleneck(nn.Module):
         feature_dequant = self.to_latent_shape(quant_recon, shape_info[0], shape_info[1])
 
         return feature_dequant
+
+    def mvq_da(self, quant_recon, shape_info=None):
+        return self.da(quant_recon, shape_info)
     
     def feature_pass_channel(self, embed_idxs, chan_param, noise_config=None):
         """
@@ -494,8 +626,17 @@ class RQBottleneck(nn.Module):
         返回:
             torch.Tensor: 重构后的量化矢量。
         """
-        # 1. 根据SNR计算基础的比特错误概率
-        p_base = calculate_p_from_snr_db(chan_param)
+        if self._is_mvq_mode():
+            return self.mvq_feature_pass_channel(embed_idxs, chan_param, noise_config=noise_config)
+
+        # 1. 训练时使用可学习的每层 bit-flip 概率；评估时回退到 SNR 对应的概率
+        if self.training and self.trainable_bit_flip_prob:
+            p_base_levels = self.get_bit_flip_probs().to(device=embed_idxs.device)
+        else:
+            p_base = calculate_p_from_snr_db(chan_param).to(device=embed_idxs.device, dtype=torch.float32)
+            p_base_levels = p_base.expand(self.rq_depth).clone()
+
+        bit_flip_prob_min = self.bit_flip_prob_min.to(device=embed_idxs.device, dtype=torch.float32)
 
         noisy_idxs_list = []
         
@@ -507,15 +648,17 @@ class RQBottleneck(nn.Module):
             binary_tensor = decimal_to_binary_rows(indices_level_i, num_bits)
 
             # --- b. 确定当前层的噪声水平 ---
-            p_final = p_base # 默认使用基础噪声
+            p_final = p_base_levels[i] # 默认使用基础噪声
             
             # 如果提供了噪声配置，并且当前层是目标层
             if noise_config and noise_config.get('target_layer') == i:
                 noise_factor = noise_config.get('noise_factor', 1.0)
-                p_final = p_base * noise_factor
-                # 钳位操作：比特错误率p不应超过0.5
-                p_final = torch.clamp(p_final, max=0.5) 
-                # print(f"Layer {i}: Applying stronger noise. Base p: {p_base.item():.2e}, Final p: {p_final.item():.2e}")
+                p_final = p_final * noise_factor
+
+            # 钳位操作：比特错误率p不应低于最小值，也不应超过0.5
+            p_final = torch.maximum(p_final, bit_flip_prob_min[i])
+            p_final = torch.minimum(p_final, p_final.new_tensor(self.bit_flip_prob_max))
+            # print(f"Layer {i}: Applying stronger noise. Base p: {p_final.item():.2e}")
 
             # --- c. 将当前层的比特流独立地通过BSC信道 ---
             channel_output = self.channel(binary_tensor, bit_flip_prob=p_final)
@@ -542,7 +685,12 @@ class RQBottleneck(nn.Module):
 
         return quant_recon
 
-    def embed(self, noisy_idxs):
+    def embed(self, noisy_idxs, chan_param=None):
+        if self._is_mvq_mode():
+            if chan_param is None:
+                raise ValueError('chan_param is required for MVQ mode')
+            return self.mvq_embed(noisy_idxs, chan_param)
+
         # 4. 从新的（带噪）索引重构量化矢量
         N, _ = noisy_idxs.shape
         quant_recon = torch.zeros(N, self.embed_dim, device=noisy_idxs.device)
