@@ -306,7 +306,6 @@ class VQEmbedding(nn.Embedding):
 class RQBottleneck(nn.Module):
     """
     Quantization bottleneck via Residual Quantization.
-    Extended with MOC_RVQ (Multi-head Octonary / Multi-head Residual Vector Quantization) support.
 
     Arguments:
         latent_shape (Tuple[int, int, int]): the shape of latents, denoted (H, W, C)
@@ -317,7 +316,6 @@ class RQBottleneck(nn.Module):
             uses separate codebooks along the ``depth'' dimension. (default: False)
         restart_unused_codes (bool): If True, it randomly assigns a feature vector in the curruent batch
             as the new embedding of unused codes in training. (default: True)
-        num_heads (int): Number of split heads for MOC_RVQ. Default: 1 (RQ / MVQ mode).
     """
 
     def __init__(self,
@@ -335,24 +333,18 @@ class RQBottleneck(nn.Module):
                  bit_flip_prob_min=3.9e-6,
                  bit_flip_prob_max=0.5,
                  bit_flip_reg_weight=0.0,
-                 bit_flip_reg_eps=1e-12,
-                 num_heads=1
+                 bit_flip_reg_eps=1e-12
                  ):
         super().__init__()
 
         self.latent_shape = torch.Size(latent_shape)
         self.embed_dim = embed_dim
         self.rq_depth = rq_depth
-        self.num_heads = num_heads
 
         if unembed_dim is not None:
             self.unembed_dim = unembed_dim
         else:
             self.unembed_dim = num_quant * self.latent_shape[-1]
-
-        if self.num_heads > 1:
-            assert self.unembed_dim % self.num_heads == 0, \
-                f"unembed_dim ({self.unembed_dim}) must be divisible by num_heads ({self.num_heads}) for MOC_RVQ."
 
         self.shared_codebook = shared_codebook
         if self.shared_codebook:
@@ -370,52 +362,36 @@ class RQBottleneck(nn.Module):
         assert len(self.n_embed) == self.rq_depth
         assert len(self.decay) == self.rq_depth
 
-        # 根据 num_heads 初始化独立码本
-        if self.num_heads > 1:
-            if self.shared_codebook:
-                codebooks_shared = [VQEmbedding(self.n_embed[0], 
-                                                self.embed_dim, 
-                                                decay=self.decay[0], 
-                                                restart_unused_codes=restart_unused_codes,
-                                                ) for _ in range(self.num_heads)]
-                # 按深度与头顺序展开，保持平铺一维 ModuleList 方便 DDP 追踪
-                self.codebooks = nn.ModuleList([codebooks_shared[h] for _ in range(self.rq_depth) for h in range(self.num_heads)])
-            else:
-                self.codebooks = nn.ModuleList([
-                    VQEmbedding(self.n_embed[idx], 
-                                self.embed_dim, 
-                                decay=self.decay[idx], 
-                                restart_unused_codes=restart_unused_codes,
-                                ) for idx in range(self.rq_depth) for _ in range(self.num_heads)
-                ])
+        if self.shared_codebook:
+            codebook0 = VQEmbedding(self.n_embed[0], 
+                                    self.embed_dim, 
+                                    decay=self.decay[0], 
+                                    restart_unused_codes=restart_unused_codes,
+                                    )
+            self.codebooks = nn.ModuleList([codebook0 for _ in range(self.rq_depth)])
         else:
-            if self.shared_codebook:
-                codebook0 = VQEmbedding(self.n_embed[0], 
-                                        self.embed_dim, 
-                                        decay=self.decay[0], 
-                                        restart_unused_codes=restart_unused_codes,
-                                        )
-                self.codebooks = nn.ModuleList([codebook0 for _ in range(self.rq_depth)])
-            else:
-                codebooks = [VQEmbedding(self.n_embed[idx], 
-                                         self.embed_dim, 
-                                         decay=self.decay[idx], 
-                                         restart_unused_codes=restart_unused_codes,
-                                         ) for idx in range(self.rq_depth)]
-                self.codebooks = nn.ModuleList(codebooks)
+            codebooks = [VQEmbedding(self.n_embed[idx], 
+                                     self.embed_dim, 
+                                     decay=self.decay[idx], 
+                                     restart_unused_codes=restart_unused_codes,
+                                     ) for idx in range(self.rq_depth)]
+            self.codebooks = nn.ModuleList(codebooks)
 
         # 作用于 (B, C, L) 形状的张量
         self.pre_quant = nn.Conv1d(
             in_channels=self.latent_shape[-1],
             out_channels=self.unembed_dim * self.embed_dim,
             kernel_size=1,
+            # groups=self.latent_shape[-1]
         )
         self.post_quant = nn.Conv1d(
             in_channels=self.unembed_dim * self.embed_dim,
             out_channels=self.latent_shape[-1],
             kernel_size=1,
+            # groups=self.latent_shape[-1]
         )
 
+        # self.channel = BSC_channel(stochastic=False, bit_flip_prob=3.9e-6)
         self.channel = BSC_channel(bit_flip_prob=3.9e-6)
         self.num_bits_per_level = [(n_embed_i - 1).bit_length() for n_embed_i in self.n_embed[:self.rq_depth]]
 
@@ -436,6 +412,8 @@ class RQBottleneck(nn.Module):
             self.register_buffer('bit_flip_reg_weight', torch.full((self.rq_depth,), float(bit_flip_reg_weight_values), dtype=torch.float32))
 
         bit_flip_prob_min_tensor = self.bit_flip_prob_min
+        bit_flip_reg_weight_tensor = self.bit_flip_reg_weight
+
         init_prob = torch.full((self.rq_depth,), self.bit_flip_prob_init, dtype=torch.float32)
         bit_flip_prob_max_tensor = torch.full_like(init_prob, self.bit_flip_prob_max)
         init_prob = torch.maximum(init_prob, bit_flip_prob_min_tensor)
@@ -496,6 +474,7 @@ class RQBottleneck(nn.Module):
     def get_bit_flip_probs(self):
         if self.trainable_bit_flip_prob:
             raw_logits = self.bit_flip_logits + 0.0
+            
             probs = torch.sigmoid(raw_logits)
             bit_flip_prob_min = self.bit_flip_prob_min.to(device=raw_logits.device)
             probs = bit_flip_prob_min + (self.bit_flip_prob_max - bit_flip_prob_min) * probs
@@ -520,37 +499,23 @@ class RQBottleneck(nn.Module):
     def to_code_shape(self, x):
         # 输入形状为 (B, L, C)
         x = x.permute(0, 2, 1).contiguous()  # 形状变为 (B, C, L)
-        # (B, C, L) -> (B, unembed_dim * embed_dim, L)
+        # (B, C, L) -> (B, num_quant * embed_dim * C, L)
         x = self.pre_quant(x)
-        # (B, unembed_dim * embed_dim, L) -> (B, L, unembed_dim * embed_dim)
+        # (B, num_quant * embed_dim * C, L) -> (B, L, num_quant * embed_dim * C)
         x = x.permute(0, 2, 1).contiguous()
+        # (B, L, num_quant * embed_dim * C) -> (B * L * num_quant * C, embed_dim)
+        x_flatten = x.reshape(-1, self.embed_dim)
 
-        if self.num_heads > 1:
-            # 兼容 MOC_RVQ 模式：直接拆分成 num_heads 段，不需要最后的整段 flatten
-            x_reshaped = x.reshape(-1, self.unembed_dim, self.embed_dim)
-            chunks = torch.chunk(x_reshaped, self.num_heads, dim=1)
-            # 展开每一段为独立的量化数据并返回
-            return [chunk.reshape(-1, self.embed_dim) for chunk in chunks]
-        else:
-            # (B, L, unembed_dim * embed_dim) -> (B * L * unembed_dim, embed_dim)
-            x_flatten = x.reshape(-1, self.embed_dim)
-            return x_flatten
+        return x_flatten
 
     def to_latent_shape(self, x, B, L):
-        if isinstance(x, list):
-            # 将多头量化的输出在对应轴上还原并拼接
-            C_head = self.unembed_dim // self.num_heads
-            reshaped_chunks = [chunk.view(B * L, C_head, self.embed_dim) for chunk in x]
-            x_concat = torch.cat(reshaped_chunks, dim=1)
-            x = x_concat.reshape(-1, self.embed_dim)
-
-        # x 是量化器的输出, 形状为 (B * L * unembed_dim, embed_dim)
+        # x 是量化器的输出, 形状为 (B * L * num_quant * C, embed_dim)
         assert x.shape[0] == B * L * self.unembed_dim, f"Input sequence length {x.shape[0]} does not match B*L*C ({B*L*self.unembed_dim})"
-        # (B * L * unembed_dim, embed_dim) -> (B, L, embed_dim * unembed_dim)
+        # (B * L * num_quant * C, embed_dim) -> (B, L, embed_dim * num_quant * C)
         x = x.view(B, L, self.embed_dim * self.unembed_dim)
-        # (B, L, unembed_dim * embed_dim) -> (B, unembed_dim * embed_dim, L)
+        # (B, L, num_quant * embed_dim * C) -> (B, num_quant * embed_dim * C, L)
         x = x.permute(0, 2, 1).contiguous()
-        # (B, unembed_dim * embed_dim, L) -> (B, C, L)
+        # (B, num_quant * embed_dim * C, L) -> (B, C, L)
         x = self.post_quant(x)
         # (B, C, L) -> (B, L, C)
         x = x.permute(0, 2, 1).contiguous()
@@ -561,61 +526,26 @@ class RQBottleneck(nn.Module):
         r"""
         Performs residual quantization on a 2D batch of vectors.
         Shape:
-            - x: (N, embed_dim) or List[num_heads] of (N_head, embed_dim)
+            - x: (N, embed_dim)
+            - quant_list[i]: (N, embed_dim)
+            - embed_idxs: (N, d)
         """
-        if self.num_heads > 1:
-            head_quants = []
-            head_idxs = []
-            
-            for h in range(self.num_heads):
-                residual_feature = x[h].detach().clone()
-                quant_list_h = []
-                embed_idxs_list_h = []
-                aggregated_quants = torch.zeros_like(x[h])
-                
-                for i in range(self.rq_depth):
-                    codebook_idx = i * self.num_heads + h
-                    quant, embed_idx = self.codebooks[codebook_idx](residual_feature)
-                    
-                    residual_feature.sub_(quant)
-                    aggregated_quants.add_(quant)
-                    
-                    quant_list_h.append(aggregated_quants.clone())
-                    embed_idxs_list_h.append(embed_idx.unsqueeze(-1))
-                
-                head_quants.append(quant_list_h)
-                head_idxs.append(torch.cat(embed_idxs_list_h, dim=-1))
-                
-            quant_list = []
-            for i in range(self.rq_depth):
-                quant_list.append([head_quants[h][i] for h in range(self.num_heads)])
-                
-            # 将多头索引按照多头特征拼接相同的排列方式，扁平化为 2D 格式 (B_L * unembed_dim, rq_depth)
-            C_head = self.unembed_dim // self.num_heads
-            B_L = head_idxs[0].shape[0] // C_head
-            reshaped_idxs = [h_idx.view(B_L, C_head, self.rq_depth) for h_idx in head_idxs]
-            concat_idxs = torch.cat(reshaped_idxs, dim=1) # (B_L, unembed_dim, rq_depth)
-            embed_idxs = concat_idxs.reshape(-1, self.rq_depth) # (B_L * unembed_dim, rq_depth)
-            
-            return quant_list, embed_idxs
-        else:
-            # 兼容原有的单头 RQ 逻辑
-            residual_feature = x.detach().clone()
+        residual_feature = x.detach().clone()
 
-            quant_list = []
-            embed_idxs_list = []
-            aggregated_quants = torch.zeros_like(x)
-            for i in range(self.rq_depth):
-                quant, embed_idx = self.codebooks[i](residual_feature)
+        quant_list = []
+        embed_idxs_list = []
+        aggregated_quants = torch.zeros_like(x)
+        for i in range(self.rq_depth):
+            quant, embed_idx = self.codebooks[i](residual_feature)
 
-                residual_feature.sub_(quant)
-                aggregated_quants.add_(quant)
+            residual_feature.sub_(quant)
+            aggregated_quants.add_(quant)
 
-                quant_list.append(aggregated_quants.clone())
-                embed_idxs_list.append(embed_idx.unsqueeze(-1))
-            
-            embed_idxs = torch.cat(embed_idxs_list, dim=-1)
-            return quant_list, embed_idxs
+            quant_list.append(aggregated_quants.clone())
+            embed_idxs_list.append(embed_idx.unsqueeze(-1))
+        
+        embed_idxs = torch.cat(embed_idxs_list, dim=-1)
+        return quant_list, embed_idxs
 
     def forward(self, x, chan_param=None):
         B, L, C = x.shape
@@ -628,7 +558,7 @@ class RQBottleneck(nn.Module):
             quant_list, embed_idxs = self.quantize(x_reshaped)
 
         commitment_loss = self.compute_commitment_loss(x_reshaped, quant_list)
-        # 建立虚拟梯度连接防止 DDP 标记两次
+        # === 新增：建立虚拟梯度连接防止 DDP 标记两次 ===
         if self.trainable_bit_flip_prob:
             commitment_loss = commitment_loss + self.bit_flip_logits.sum() * 0.0
 
@@ -642,24 +572,16 @@ class RQBottleneck(nn.Module):
         Compute the commitment loss for the residual quantization.
         The loss is iteratively computed by aggregating quantized features.
         """
-        if isinstance(x, list):
-            # MOC_RVQ 模式下求各头各深度的均值损失
-            loss_list1 = []
-            for _, quant_heads in enumerate(quant_list):
-                level_losses = []
-                for h in range(self.num_heads):
-                    level_losses.append((x[h] - quant_heads[h].detach()).pow(2.0).mean())
-                partial_loss1 = torch.stack(level_losses).mean()
-                loss_list1.append(partial_loss1)
-            commitment_loss = torch.mean(torch.stack(loss_list1))
-            return commitment_loss
-        else:
-            loss_list1 = []
-            for _, quant in enumerate(quant_list):
-                partial_loss1 = (x-quant.detach()).pow(2.0).mean()
-                loss_list1.append(partial_loss1)
-            commitment_loss = torch.mean(torch.stack(loss_list1))
-            return commitment_loss
+        loss_list1 = []
+        for _, quant in enumerate(quant_list):
+            partial_loss1 = (x-quant.detach()).pow(2.0).mean()
+            loss_list1.append(partial_loss1)
+            # partial_loss2 = (x.detach()-quant).pow(2.0).mean()
+            # loss_list2.append(partial_loss2)
+
+        # commitment_loss = torch.mean(torch.stack(loss_list1)) + 0.25 * torch.mean(torch.stack(loss_list2))
+        commitment_loss = torch.mean(torch.stack(loss_list1))
+        return commitment_loss
     
     def ad(self, x, feat_shape=None, chan_param=None):
         shape_info = x.shape
@@ -672,101 +594,42 @@ class RQBottleneck(nn.Module):
             quant_list, embed_idxs = self.quantize(x_reshaped)
         commitment_loss = self.compute_commitment_loss(x_reshaped, quant_list)
 
-        # 建立虚拟梯度连接防止 DDP 标记两次
+        # === 新增：建立虚拟梯度连接防止 DDP 标记两次 ===
         if self.trainable_bit_flip_prob:
             commitment_loss = commitment_loss + self.bit_flip_logits.sum() * 0.0
 
-        if self.num_heads > 1:
-            # 确定当前尺度的尺寸
-            N_head = quant_list[-1][0].shape[0]
-            C_head = self.unembed_dim // self.num_heads
-            B_L = N_head // C_head
-            
-            # 1. 合并输出重建向量 quant_recon
-            reshaped_chunks = [chunk.view(B_L, C_head, self.embed_dim) for chunk in quant_list[-1]]
-            x_concat = torch.cat(reshaped_chunks, dim=1)
-            quant_recon = x_concat.reshape(-1, self.embed_dim)
-            
-            # 2. 合并输出编码端原始向量 x_reshaped，避免外层 STE 运算时报 'Tensor' and 'list' 错误
-            reshaped_x_chunks = [chunk.view(B_L, C_head, self.embed_dim) for chunk in x_reshaped]
-            x_reshaped_concat = torch.cat(reshaped_x_chunks, dim=1)
-            x_reshaped_out = x_reshaped_concat.reshape(-1, self.embed_dim)
-        else:
-            quant_recon = quant_list[-1]
-            x_reshaped_out = x_reshaped
-
-        return x_reshaped_out, quant_recon, commitment_loss, embed_idxs, shape_info
+        return x_reshaped, quant_list[-1], commitment_loss, embed_idxs, shape_info
     
     def da(self, quant_recon, shape_info=None):
+
         feature_dequant = self.to_latent_shape(quant_recon, shape_info[0], shape_info[1])
+
         return feature_dequant
 
     def mvq_da(self, quant_recon, shape_info=None):
         return self.da(quant_recon, shape_info)
     
     def feature_pass_channel(self, embed_idxs, chan_param, noise_config=None):
+        """
+        将嵌入索引转换为比特流，通过BSC信道，再转换回索引，并重构量化矢量。
+        可以根据 noise_config 对特定层施加更强的噪声。
+
+        参数:
+            embed_idxs (torch.Tensor): 形状为 [N, rq_depth] 的码本索引。
+            chan_param (float): 用于计算基础比特错误率的信道参数 (例如 SNR in dB)。
+            noise_config (dict, optional): 指定噪声注入策略的字典。
+                例如: {'target_layer': 0, 'noise_factor': 10}
+                - 'target_layer' (int): 要施加更强噪声的层级索引。
+                - 'noise_factor' (float): 噪声增强因子，p_new = p_base * noise_factor。
+                默认为 None，表示所有层使用相同的噪声水平。
+
+        返回:
+            torch.Tensor: 重构后的量化矢量。
+        """
         if self._is_mvq_mode():
             return self.mvq_feature_pass_channel(embed_idxs, chan_param, noise_config=noise_config)
 
-        if self.num_heads > 1:
-            B_L = embed_idxs.shape[0] // self.unembed_dim
-            C_head = self.unembed_dim // self.num_heads
-            
-            # 将 2D 索引按多头重新划分
-            reshaped_idxs = embed_idxs.view(B_L, self.unembed_dim, self.rq_depth)
-            chunks = torch.split(reshaped_idxs, C_head, dim=1)
-            
-            if self.training and self.trainable_bit_flip_prob:
-                p_base_levels = self.get_bit_flip_probs().to(device=embed_idxs.device)
-            else:
-                p_base = calculate_p_from_snr_db(chan_param).to(device=embed_idxs.device, dtype=torch.float32)
-                p_base_levels = p_base.expand(self.rq_depth).clone()
-
-            bit_flip_prob_min = self.bit_flip_prob_min.to(device=embed_idxs.device, dtype=torch.float32)
-
-            reconstructed_heads = []
-            for h in range(self.num_heads):
-                embed_idxs_h = chunks[h].reshape(-1, self.rq_depth)
-                noisy_idxs_list_h = []
-                
-                for i in range(self.rq_depth):
-                    indices_level_i = embed_idxs_h[:, i]
-                    num_bits = self.num_bits_per_level[i]
-                    binary_tensor = decimal_to_binary_rows(indices_level_i, num_bits)
-
-                    p_final = p_base_levels[i]
-                    if noise_config and noise_config.get('target_layer') == i:
-                        noise_factor = noise_config.get('noise_factor', 1.0)
-                        p_final = p_final * noise_factor
-
-                    p_final = torch.maximum(p_final, bit_flip_prob_min[i])
-                    p_final = torch.minimum(p_final, p_final.new_tensor(self.bit_flip_prob_max))
-
-                    channel_output = self.channel(binary_tensor, bit_flip_prob=p_final)
-                    noisy_bits = channel_output['out']
-
-                    n_embed_i = self.n_embed[i]
-                    noisy_indices_level_i = binary_rows_to_decimal(noisy_bits)
-                    noisy_indices_level_i = torch.clamp(noisy_indices_level_i, 0, n_embed_i - 1)
-                    
-                    noisy_idxs_list_h.append(noisy_indices_level_i.unsqueeze(1))
-                    
-                noisy_idxs_h = torch.cat(noisy_idxs_list_h, dim=1)
-                
-                quant_recon_h = torch.zeros(embed_idxs_h.shape[0], self.embed_dim, device=embed_idxs.device)
-                for i in range(self.rq_depth):
-                    codebook_idx = i * self.num_heads + h
-                    embeds = self.codebooks[codebook_idx].embed(noisy_idxs_h[:, i])
-                    quant_recon_h.add_(embeds)
-                    
-                reconstructed_heads.append(quant_recon_h)
-                
-            reshaped_chunks = [recon_h.view(B_L, C_head, self.embed_dim) for recon_h in reconstructed_heads]
-            x_concat = torch.cat(reshaped_chunks, dim=1)
-            quant_recon = x_concat.reshape(-1, self.embed_dim)
-            return quant_recon
-
-        # 兼容原有单头 RQ 逻辑
+        # 1. 训练时使用可学习的每层 bit-flip 概率；评估时回退到 SNR 对应的概率
         if self.training and self.trainable_bit_flip_prob:
             p_base_levels = self.get_bit_flip_probs().to(device=embed_idxs.device)
         else:
@@ -776,30 +639,44 @@ class RQBottleneck(nn.Module):
         bit_flip_prob_min = self.bit_flip_prob_min.to(device=embed_idxs.device, dtype=torch.float32)
 
         noisy_idxs_list = []
+        
+        # 2. 逐层处理：转换比特 -> 施加噪声 -> 转换回索引
         for i in range(self.rq_depth):
+            # --- a. 将当前层的索引转换为比特流 ---
             indices_level_i = embed_idxs[:, i]
             num_bits = self.num_bits_per_level[i]
             binary_tensor = decimal_to_binary_rows(indices_level_i, num_bits)
 
-            p_final = p_base_levels[i]
+            # --- b. 确定当前层的噪声水平 ---
+            p_final = p_base_levels[i] # 默认使用基础噪声
+            
+            # 如果提供了噪声配置，并且当前层是目标层
             if noise_config and noise_config.get('target_layer') == i:
                 noise_factor = noise_config.get('noise_factor', 1.0)
                 p_final = p_final * noise_factor
 
+            # 钳位操作：比特错误率p不应低于最小值，也不应超过0.5
             p_final = torch.maximum(p_final, bit_flip_prob_min[i])
             p_final = torch.minimum(p_final, p_final.new_tensor(self.bit_flip_prob_max))
+            # print(f"Layer {i}: Applying stronger noise. Base p: {p_final.item():.2e}")
 
+            # --- c. 将当前层的比特流独立地通过BSC信道 ---
             channel_output = self.channel(binary_tensor, bit_flip_prob=p_final)
             noisy_bits = channel_output['out']
 
+            # --- d. 将带噪比特转换回整数索引 ---
             n_embed_i = self.n_embed[i]
             noisy_indices_level_i = binary_rows_to_decimal(noisy_bits)
+            
+            # 钳位操作，防止因比特错误导致的索引越界
             noisy_indices_level_i = torch.clamp(noisy_indices_level_i, 0, n_embed_i - 1)
             
             noisy_idxs_list.append(noisy_indices_level_i.unsqueeze(1))
 
+        # 3. 将各层得到的带噪索引拼接起来
         noisy_idxs = torch.cat(noisy_idxs_list, dim=1)
 
+        # 4. 从新的（带噪）索引重构量化矢量
         N, _ = embed_idxs.shape
         quant_recon = torch.zeros(N, self.embed_dim, device=embed_idxs.device)
         for i in range(self.rq_depth):
@@ -814,33 +691,7 @@ class RQBottleneck(nn.Module):
                 raise ValueError('chan_param is required for MVQ mode')
             return self.mvq_embed(noisy_idxs, chan_param)
 
-        if self.num_heads > 1:
-            # 将外部 2D 索引 (B_L * unembed_dim, rq_depth) 拆分为各头的独立索引，然后分别查表
-            B_L = noisy_idxs.shape[0] // self.unembed_dim
-            C_head = self.unembed_dim // self.num_heads
-            
-            # 先重塑为 (B_L, unembed_dim, rq_depth) 方便分割
-            reshaped_idxs = noisy_idxs.view(B_L, self.unembed_dim, self.rq_depth)
-            chunks = torch.split(reshaped_idxs, C_head, dim=1) # List 长度为 num_heads，单元素为 (B_L, C_head, rq_depth)
-            
-            reconstructed_heads = []
-            for h in range(self.num_heads):
-                chunk_h = chunks[h].reshape(-1, self.rq_depth) # (B_L * C_head, rq_depth)
-                
-                quant_recon_h = torch.zeros(chunk_h.shape[0], self.embed_dim, device=noisy_idxs.device)
-                for i in range(self.rq_depth):
-                    codebook_idx = i * self.num_heads + h
-                    embeds = self.codebooks[codebook_idx].embed(chunk_h[:, i])
-                    quant_recon_h.add_(embeds)
-                reconstructed_heads.append(quant_recon_h)
-                
-            # 多头重构向量在对应的通道维上合并并输出
-            reshaped_chunks = [recon_h.view(B_L, C_head, self.embed_dim) for recon_h in reconstructed_heads]
-            x_concat = torch.cat(reshaped_chunks, dim=1)
-            quant_recon = x_concat.reshape(-1, self.embed_dim)
-            return quant_recon
-
-        # 4. 从单头的 2D 带噪索引重构量化矢量
+        # 4. 从新的（带噪）索引重构量化矢量
         N, _ = noisy_idxs.shape
         quant_recon = torch.zeros(N, self.embed_dim, device=noisy_idxs.device)
         for i in range(self.rq_depth):
@@ -850,74 +701,57 @@ class RQBottleneck(nn.Module):
         return quant_recon
     
     def feature_pass_error(self, embed_idxs, chan_param, noise_config=None):
+        """
+        将嵌入索引转换为比特流，通过误差信道，再转换回索引，并重构量化矢量。
+        可以根据 noise_config 对特定层施加误差。
+
+        参数:
+            embed_idxs (torch.Tensor): 形状为 [N, rq_depth] 的码本索引。
+            chan_param (float): 用于计算基础比特错误率的信道参数 (例如 SNR in dB)。
+            noise_config (dict, optional): 指定噪声注入策略的字典。
+                例如: {'target_layer': 0, 'noise_factor': 10}
+                - 'target_layer' (int): 要施加更强噪声的层级索引。
+                默认为 None，表示所有层无误差。
+
+        返回:
+            torch.Tensor: 重构后的量化矢量。
+        """
+        # 1. 根据SNR计算基础的比特错误概率
         p_base = torch.tensor(0.0, dtype=torch.float)
 
-        if self.num_heads > 1:
-            B_L = embed_idxs.shape[0] // self.unembed_dim
-            C_head = self.unembed_dim // self.num_heads
-            
-            reshaped_idxs = embed_idxs.view(B_L, self.unembed_dim, self.rq_depth)
-            chunks = torch.split(reshaped_idxs, C_head, dim=1)
-            
-            reconstructed_heads = []
-            for h in range(self.num_heads):
-                embed_idxs_h = chunks[h].reshape(-1, self.rq_depth)
-                noisy_idxs_list_h = []
-                
-                for i in range(self.rq_depth):
-                    indices_level_i = embed_idxs_h[:, i]
-                    num_bits = self.num_bits_per_level[i]
-                    binary_tensor = decimal_to_binary_rows(indices_level_i, num_bits)
-
-                    p_final = p_base
-                    if noise_config and noise_config.get('target_layer') == i:
-                        p_final = torch.tensor(1.0, dtype=torch.float)
-
-                    channel_output = self.channel(binary_tensor, bit_flip_prob=p_final)
-                    noisy_bits = channel_output['out']
-
-                    n_embed_i = self.n_embed[i]
-                    noisy_indices_level_i = binary_rows_to_decimal(noisy_bits)
-                    noisy_indices_level_i = torch.clamp(noisy_indices_level_i, 0, n_embed_i - 1)
-                    
-                    noisy_idxs_list_h.append(noisy_indices_level_i.unsqueeze(1))
-                    
-                noisy_idxs_h = torch.cat(noisy_idxs_list_h, dim=1)
-                
-                quant_recon_h = torch.zeros(embed_idxs_h.shape[0], self.embed_dim, device=embed_idxs.device)
-                for i in range(self.rq_depth):
-                    codebook_idx = i * self.num_heads + h
-                    embeds = self.codebooks[codebook_idx].embed(noisy_idxs_h[:, i])
-                    quant_recon_h.add_(embeds)
-                    
-                reconstructed_heads.append(quant_recon_h)
-                
-            reshaped_chunks = [recon_h.view(B_L, C_head, self.embed_dim) for recon_h in reconstructed_heads]
-            x_concat = torch.cat(reshaped_chunks, dim=1)
-            quant_recon = x_concat.reshape(-1, self.embed_dim)
-            return quant_recon
-
         noisy_idxs_list = []
+        
+        # 2. 逐层处理：转换比特 -> 施加噪声 -> 转换回索引
         for i in range(self.rq_depth):
+            # --- a. 将当前层的索引转换为比特流 ---
             indices_level_i = embed_idxs[:, i]
             num_bits = self.num_bits_per_level[i]
             binary_tensor = decimal_to_binary_rows(indices_level_i, num_bits)
 
-            p_final = p_base
+            # --- b. 确定当前层的噪声水平 ---
+            p_final = p_base # 默认无误差
+            
+            # 如果提供了噪声配置，并且当前层是目标层
             if noise_config and noise_config.get('target_layer') == i:
                 p_final = torch.tensor(1.0, dtype=torch.float)
 
+            # --- c. 将当前层的比特流独立地通过BSC信道 ---
             channel_output = self.channel(binary_tensor, bit_flip_prob=p_final)
             noisy_bits = channel_output['out']
 
+            # --- d. 将带噪比特转换回整数索引 ---
             n_embed_i = self.n_embed[i]
             noisy_indices_level_i = binary_rows_to_decimal(noisy_bits)
+            
+            # 钳位操作，防止因比特错误导致的索引越界
             noisy_indices_level_i = torch.clamp(noisy_indices_level_i, 0, n_embed_i - 1)
             
             noisy_idxs_list.append(noisy_indices_level_i.unsqueeze(1))
 
+        # 3. 将各层得到的带噪索引拼接起来
         noisy_idxs = torch.cat(noisy_idxs_list, dim=1)
 
+        # 4. 从新的（带噪）索引重构量化矢量
         N, _ = embed_idxs.shape
         quant_recon = torch.zeros(N, self.embed_dim, device=embed_idxs.device)
         for i in range(self.rq_depth):
