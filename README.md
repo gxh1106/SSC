@@ -1,3 +1,20 @@
+# SSC
+Official code implementation for ["Spatial Semantic Communication: When Semantic Transmission Meets Index Modulation"](https://ieeexplore.ieee.org/document/11643249)
+
+## Citation
+```bibtex
+@ARTICLE{11643249,
+  author={Guo, Xinghao and Xu, Yin and He, Dazhi and Hong, Hanjiang and Chen, Zhiyong and Zhang, Cixiao and Wu, Yiyan and Zhang, Wenjun},
+  journal={IEEE Transactions on Communications}, 
+  title={Spatial Semantic Communication: When Semantic Transmission Meets Index Modulation}, 
+  year={2026},
+  volume={},
+  number={},
+  pages={1-1},
+  keywords={Indexes;Indexing;Instant messaging;Modulation;Quantization (signal);Streams;Semantic communication;Training;Ports (computers);PSNR;Semantic communication;joint source-channel coding;digital communication;index modulation;vector quantization},
+  doi={10.1109/TCOMM.2026.3720492}}
+
+
 ## Installation
 
 This project is developed based on [BasicSR](https://github.com/xinntao/BasicSR).
