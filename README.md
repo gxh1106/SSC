@@ -13,7 +13,7 @@ Official code implementation for ["Spatial Semantic Communication: When Semantic
   pages={1-1},
   keywords={Indexes;Indexing;Instant messaging;Modulation;Quantization (signal);Streams;Semantic communication;Training;Ports (computers);PSNR;Semantic communication;joint source-channel coding;digital communication;index modulation;vector quantization},
   doi={10.1109/TCOMM.2026.3720492}}
-
+```
 
 ## Installation
 
