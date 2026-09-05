@@ -152,3 +152,6 @@ BPG-LDPC/
 libbpg-0.9.8.tar.gz
 inference/
 options/old/
+
+# SSC magazine (LaTeX manuscript + sim code)
+SSC-magazine/

@@ -38,7 +38,7 @@ def plot_results(results_folders, labels, save_dir='.', file_suffix=''):
     default_zorder = 2
 
     # --- 绘制 PSNR vs. SNR 曲线图 ---
-    plt.figure(figsize=(6, 6))
+    plt.figure(figsize=(6, 4))
 
     for i, (folder, label) in enumerate(zip(results_folders, labels)):
         file_path = os.path.join(folder, 'psnr_results.csv')
@@ -57,8 +57,9 @@ def plot_results(results_folders, labels, save_dir='.', file_suffix=''):
     plt.ylabel('PSNR (dB)', fontsize=axis_label_size)
     plt.tick_params(axis='both', which='major', labelsize=tick_label_size)
     plt.grid(True, linestyle='--', alpha=0.6)
-    # loc='best' 让系统自动寻找遮挡最少的位置, 'lower right', 'upper left'
-    plt.legend(fontsize=legend_size, loc='lower center')
+    # loc='best' 让系统自动寻找遮挡最少的位置, 'lower right', 'upper left', 'lower center'
+    plt.legend(fontsize=legend_size, loc='lower right')
+    plt.xlim(right=21)
     plt.ylim(bottom=18) 
 
     # 构建保存路径并保存图表
@@ -69,7 +70,7 @@ def plot_results(results_folders, labels, save_dir='.', file_suffix=''):
 
 
     # --- 绘制 MS-SSIM vs. SNR 曲线图 ---
-    plt.figure(figsize=(6, 6))
+    plt.figure(figsize=(6, 4))
 
     for i, (folder, label) in enumerate(zip(results_folders, labels)):
         file_path = os.path.join(folder, 'psnr_results.csv')
@@ -87,7 +88,8 @@ def plot_results(results_folders, labels, save_dir='.', file_suffix=''):
     plt.ylabel('MS-SSIM', fontsize=axis_label_size)
     plt.tick_params(axis='both', which='major', labelsize=tick_label_size)
     plt.grid(True, linestyle='--', alpha=0.6)
-    plt.legend(fontsize=legend_size, loc='lower center')
+    plt.legend(fontsize=legend_size, loc='lower right')
+    plt.xlim(right=21)
     plt.ylim(bottom=0.5) 
 
     # 构建保存路径并保存图表
@@ -99,29 +101,29 @@ def plot_results(results_folders, labels, save_dir='.', file_suffix=''):
 
 # --- 使用示例 ---
 if __name__ == '__main__':
-    subfolder = 'bpp4_64C_16E_4D'  # 子文件夹名称
+    subfolder = 'bpp2_32C_16E_4D'  # 子文件夹名称
     file_suffix = subfolder.split('_')[0]  # 提取 bpp 部分作为文件后缀
     # 1. 设置包含 .csv 文件的结果文件夹路径
     # 请将这里的路径替换为您自己的实际路径
     result_folders_to_plot = [
-        f'output/16xD/{subfolder}/SSC',
-        f'output/16xD/{subfolder}/SSC_woIM',
-        f'output/16xD/{subfolder}/SSC_woSS',
-        f'output/16xD/{subfolder}/sDAC_FA-IM',
-        f'output/16xD/bpp3/BPG+LDPC',
+        f'output/baseline/{subfolder}/SSC',
+        f'output/baseline/{subfolder}/RVQ_8H_110k_FA_IM',
+        f'output/baseline/{subfolder}/MVQ_4V_65536E_100k_FA_IM',
+        f'output/baseline/{subfolder}/sDAC_FA-IM',
+        # f'output/baseline/bpp3/BPG+LDPC',
     ]
 
     # 2. 为每条曲线设置一个图例标签
     curve_labels = [
         'SSC',
-        'SSC w/o IM',
-        'SSC w/o SS',
+        'MOC-RVQ',
+        'ESC-MVQ',
         'sDAC',
-        'BPG+LDPC',
+        # 'BPG+LDPC',
     ]
 
     # 3. 指定你想要保存图像的文件夹
-    output_directory = f'output/16xD'
+    output_directory = f'output/baseline'
 
     # 4. 调用函数，传入结果文件夹、标签和保存路径
     plot_results(result_folders_to_plot, curve_labels, output_directory, file_suffix=file_suffix)
