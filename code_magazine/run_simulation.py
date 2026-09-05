@@ -73,11 +73,12 @@ plt.rcParams.update({
 
 def build_channels(seed=0):
     # 论文选用各自家族中双流不对称更明显、SeIM 增益更显著的搭配：
-    # FA-IM 采用 Ns=8 激活端口 + 16-QAM（3+4 bits），SM 4 天线 + 64-QAM
-    #（2+6 bits），OFDM-IM 4 选 2 子载波 + 16-QAM（2+8 bits）。
+    # FA-IM 16 端口选 4 + 16-QAM（2+4 bits，与 SSC 论文端口配置一致），
+    # SM 4 天线 + 64-QAM（2+6 bits），OFDM-IM 4 选 2 子载波 + 16-QAM（2+8 bits）。
     return [
-        FAIMChannel(Ns=8, Np=16, Nr=8, M=16, W=2.0, L_paths=10, seed=seed),
-        SMChannel(Nt=4, Nr=4, M=64, seed=seed + 1),
+        FAIMChannel(Ns=4, Np=16, Nr=8, M=16, W=2.0, L_paths=10,
+                    num_H=100, seed=seed),
+        SMChannel(Nt=4, Nr=4, M=64, num_H=100, seed=seed + 1),
         OFDMIMChannel(n=4, k=2, M=16, seed=seed + 2),
     ]
 
@@ -197,8 +198,10 @@ def part_b_pretrained(channels, codec, snr_lists, n_trials, out_prefix,
         snr_list = snr_lists[ch.name]
         t0 = time.time()
         # seim/eep 使用相同种子 -> 同一信道实现与噪声 -> 配对比较
+        # 种子不含 SNR 项（公共随机数）：同一 (图像, trial, 模式) 在所有
+        # SNR 点上共享同一信道实现与噪声序列，PSNR 曲线随 SNR 光滑变化
         tasks = [(snr, ii, t, mode,
-                  (si * 100000 + ii * 100 + t * 10) & 0x7fffffff)
+                  (ii * 1000 + t * 10) & 0x7fffffff)
                  for si, snr in enumerate(snr_list)
                  for ii in range(n_img)
                  for t in range(n_trials)

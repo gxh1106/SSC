@@ -225,9 +225,10 @@ class FAIMChannel(IMChannelBase):
         best = np.argmax(np.linalg.slogdet(A)[1])
         return H[:, combos[best]]
 
-    def _tx_frames(self, port_idx, sym_idx, snr_db, rng):
+    def _tx_frames(self, port_idx, sym_idx, snr_db, rng, iH=None):
         F = len(port_idx)
-        iH = int(rng.integers(0, self.num_H))
+        if iH is None:
+            iH = int(rng.integers(0, self.num_H))
         Hs, table = self.Hs_pool[iH], self.lookup[iH]
         s = self.constellation[sym_idx]
         y = Hs[:, port_idx] * s[None, :]                                 # (Nr,F)
@@ -260,9 +261,10 @@ class SMChannel(IMChannelBase):
             all_x[p * M:(p + 1) * M, p] = self.constellation
         self.lookup = np.stack([H @ all_x.T for H in self.H_pool])
 
-    def _tx_frames(self, port_idx, sym_idx, snr_db, rng):
+    def _tx_frames(self, port_idx, sym_idx, snr_db, rng, iH=None):
         F = len(port_idx)
-        iH = int(rng.integers(0, self.num_H))
+        if iH is None:
+            iH = int(rng.integers(0, self.num_H))
         H, table = self.H_pool[iH], self.lookup[iH]
         s = self.constellation[sym_idx]
         y = H[:, port_idx] * s[None, :]
@@ -344,10 +346,16 @@ class OFDMIMChannel(IMChannelBase):
 
 def decide_robust_stream(channel, snr_list, n_slots=20000, seed=123):
     """对给定信道在整个工作 SNR 区间统计双流误比特率，
-    返回 (index_more_robust, ber_i_list, ber_s_list)。"""
-    rng = np.random.default_rng(seed)
+    返回 (index_more_robust, ber_i_list, ber_s_list)。
+
+    采用公共随机数（common random numbers）方差缩减：每个 SNR 点用
+    相同种子重建 rng，使各点的比特序列、信道实现顺序、噪声完全
+    一致，唯一变化的是噪声方差——BER 曲线因此天然光滑单调
+    （与 ssc/inference.py 固定种子后遍历全部实现的口径一致）。
+    """
     ber_i, ber_s = [], []
     for snr in snr_list:
+        rng = np.random.default_rng(seed)
         bi, bs = channel.measure(snr, n_slots, rng)
         ber_i.append(bi)
         ber_s.append(bs)

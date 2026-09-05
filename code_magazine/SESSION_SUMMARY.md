@@ -46,13 +46,16 @@ numpy 版 IM 信道与 torch 版 `ssc/faim.py` 参数/算法一致。
 
 ### 关键结果（论文采用，第三轮）
 
-| IM 方案（论文配置） | SNR 区间 | 鲁棒流 | 最大 SeIM 增益 |
+| IM 方案（论文最终配置） | SNR 区间 | 鲁棒流 | 最大 SeIM 增益 |
 |---|---|---|---|
-| SM 4×4, 64-QAM（2+6 bits） | 2–24 dB | 索引流 | 2.04 dB @ 4 dB |
-| OFDM-IM n4k2, 16-QAM（2+8 bits） | 10–30 dB | 索引流 | 0.65 dB @ 10 dB |
-| FA-IM Ns=8/Np=16, 16-QAM（3+4 bits） | 0–20 dB | 符号流 | 1.37 dB @ 0 dB |
+| SM 4×4, 64-QAM（2+6 bits） | 2–24 dB | 索引流 | 2.20 dB @ 2 dB |
+| OFDM-IM n4k2, 16-QAM（2+8 bits） | 10–30 dB | 索引流 | 0.68 dB @ 10 dB |
+| FA-IM Ns=4/Np=16, 16-QAM（2+4 bits，端口同 SSC 论文） | 0–20 dB | 符号流 | 1.07 dB @ 0 dB |
 
-BER 图最终用 10⁶ 时隙/点（均分到全部信道实现），零误码点掩蔽，曲线光滑到 ~1e-5。
+光滑性：BER 与 PSNR 均采用公共随机数（每 SNR 点同种子重建 rng + 确定性遍历
+num_H=100 个实现，对齐 ssc/inference.py 口径），BER 每点 10⁶ 时隙，曲线单调光滑。
+注：FA-IM 3+4（Ns=8）曾被选用后弃用——其 6–16 dB 存在收敛的真实负增益（~ -0.2 dB，
+错误集中效应）；2+4 配置全区间增益非负且平滑。
 
 ### 配置扫描（run_config_sweep.py，8 个配置）
 

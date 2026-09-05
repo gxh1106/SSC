@@ -47,10 +47,11 @@ python run_simulation.py --quick              # 冒烟测试
 CUDA_VISIBLE_DEVICES=5 ~/.workbuddy/venvs/ssc-sim/bin/python \
     run_config_sweep.py --workers 48          # 约 25 分钟
 
-# ---- 预训练权重模式（真实图像，推荐后台运行）----
-OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 CUDA_VISIBLE_DEVICES=5 \
+# ---- 预训练权重模式（真实图像，推荐后台运行；GPU 编号按空闲情况选）----
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 CUDA_VISIBLE_DEVICES=0 \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 nohup ~/.workbuddy/venvs/ssc-sim/bin/python run_simulation.py \
-    --codec pretrained --trials 3 --slots 20000 --workers 48 \
+    --codec pretrained --trials 3 --slots 1000000 --workers 48 \
     --fig_dir ../SSC-magazine/figures \
     --res_dir ./results \
     > sim_run.log 2>&1 &
@@ -67,7 +68,7 @@ nohup ~/.workbuddy/venvs/ssc-sim/bin/python run_simulation.py \
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--trials` | 6 | 每 (图像, SNR) 的独立信道/噪声实现数（本次论文结果用 3） |
-| `--slots` | 20000 | Part A 每个 SNR 的 BER 测量时隙数（论文用 200000，曲线光滑到 ~1e-5） |
+| `--slots` | 20000 | Part A 每个 SNR 的 BER 测量时隙数（论文最终图用 1000000 + 公共随机数，单调光滑到 ~1e-5；BER 图零误码点自动掩蔽不画） |
 | `--workers` | 48 | 信道传输的 CPU 并行进程数（瓶颈在 CPU 端 OFDM-IM） |
 | `--fig_dir` | `../figures` | 图片输出目录（论文用 `../SSC-magazine/figures`） |
 | `--res_dir` | `../results` | 数据输出目录（本次用 `./results`，已 gitignore） |
@@ -129,27 +130,38 @@ for r in d['results']:
 2. **并行传输**：`transmit` 是纯 NumPy，用 `ProcessPoolExecutor` 按单次传输为粒度并行
    （FA-IM ~0.35s/次、SM ~0.26s/次、OFDM-IM ~2s/次；48 进程下全程约 25 分钟）。
 3. **批量解码**：`decode_many` 把同一 (图像, SNR) 下的 trial×mode 索引拼成 batch 一次过 decoder。
-4. **配对比较**：seim/eep 共用同一随机种子（同一信道实现与噪声），保证消融公平。
+4. **配对比较 + 公共随机数**：seim/eep 共用同一随机种子（同一信道实现与噪声），
+   保证消融公平；且种子不含 SNR 项——同一 (图像, trial, 模式) 在所有 SNR 点共享
+   同一套随机性，PSNR 曲线随 SNR 光滑单调（方差缩减，口径同 `ssc/inference.py`）。
 
 全程参考：1584 个传输任务/信道，FA-IM 约 60s、SM 约 54s、OFDM-IM 约 24min（系统负载高时更慢）。
 
-## 本次仿真结果（2026-09-05 第三轮，已写入论文 Section V）
+## 本次仿真结果（2026-09-05 最终版，已写入论文 Section V）
 
 论文采用各自家族中不对称更明显、增益更显著的搭配（`build_channels`）：
-**FA-IM Ns=8/Np=16, 16-QAM（3+4 bits）**，SM 4×4 64-QAM（2+6 bits），
-OFDM-IM n=4/k=2 16-QAM（2+8 bits）。SNR 区间：FA-IM 0–20 dB，SM 2–24 dB，
-OFDM-IM 10–30 dB；BER 每点 2×10^5 时隙并均分到全部信道实现。
+**FA-IM Ns=4/Np=16, 16-QAM（2+4 bits，端口配置与 SSC 论文一致）**，
+SM 4×4 64-QAM（2+6 bits），OFDM-IM n=4/k=2 16-QAM（2+8 bits）。
+SNR 区间：FA-IM 0–20 dB，SM 2–24 dB，OFDM-IM 10–30 dB。
 
-鲁棒流方向：SM → 索引流，OFDM-IM → 索引流，FA-IM → 符号流（中位 BER 比 3.8 倍）。
+**光滑性方法（与 ssc/inference.py 口径一致）**：BER 与 PSNR 测量均采用公共随机数
+（common random numbers）——每个 SNR 点用相同种子重建 rng，各点的比特序列、
+信道实现顺序（确定性遍历 num_H=100 个实现）、噪声完全一致，仅噪声方差随 SNR
+变化，曲线天然单调光滑；BER 每点 10^6 时隙。
+
+鲁棒流方向：SM → 索引流，OFDM-IM → 索引流，FA-IM → 符号流。
 
 | IM 方案 | SNR 区间 | 最大 SeIM 增益 |
 |---|---|---|
-| SM 4×4, 64-QAM | 2–24 dB | 2.04 dB @ 4 dB |
-| OFDM-IM n=4,k=2, 16-QAM | 10–30 dB | 0.65 dB @ 10 dB（11/11 点为正，平滑递减） |
-| FA-IM 16 端口/8 激活, 16-QAM | 0–20 dB | 1.37 dB @ 0 dB（增益集中在低 SNR 瀑布区） |
+| SM 4×4, 64-QAM | 2–24 dB | 2.20 dB @ 2 dB |
+| OFDM-IM n=4,k=2, 16-QAM | 10–30 dB | 0.68 dB @ 10 dB（11/11 点为正，平滑递减） |
+| FA-IM 16 端口/4 激活, 16-QAM | 0–20 dB | 1.07 dB @ 0 dB（11/11 点为正，平滑递减） |
 
 高 SNR 处所有曲线饱和于编解码器的失真下限（约 27 dB）。
-增益排序 SM > FA-IM > OFDM-IM 与双流 BER 不对称强度排序一致（论文核心论据）。
+增益排序 SM > FA-IM > OFDM-IM 与瀑布区双流 BER 不对称强度排序一致（论文核心论据）。
+
+备注（配置选择过程）：FA-IM 3+4（Ns=8, 16-QAM）低 SNR 增益虽大（1.37 dB @ 0 dB），
+但 trials=10 收敛验证发现其在 6–16 dB 出现约 -0.2 dB 的真实负增益（重要索引集中
+在符号流上，深衰落实现时缺乏错误分散），故论文弃用；2+4 配置增益全区间非负且平滑。
 
 ## 索引/符号比特搭配扫描（run_config_sweep.py，2026-09-05）
 
@@ -209,8 +221,8 @@ OFDM-IM 10–30 dB；BER 每点 2×10^5 时隙并均分到全部信道实现。
 - 仿真图被 `main.tex` 引用为 PDF，重跑仿真后需重新编译 LaTeX。本机已装 TinyTeX
   （`~/.TinyTeX`），编译命令：
   `export PATH=$HOME/.TinyTeX/bin/x86_64-linux:$PATH && cd ../SSC-magazine && pdflatex main && bibtex main && pdflatex main && pdflatex main`。
-- FA-IM 在 M=64 配置下**符号流** BER 更低（离线 `decide_robust_stream` 实测，
-  2×10^5 时隙 + 实现池平均后在整个 0–20 dB 区间方向一致），
+- FA-IM 在论文配置（Ns=4/Np=16, 16-QAM）下**符号流** BER 更低（公共随机数 +
+  10^6 时隙实测，整个 0–20 dB 区间方向一致，高 SNR 差达两个数量级），
   与 SSC 论文"索引流事件错误更少"的事件口径不同——这是文章论点之一，
   **不要"修复"它去迎合直觉**。
 - 换用其他实验权重时改 `--config/--model` 即可（注意 n_embed 需为 2 的幂，且
