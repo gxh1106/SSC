@@ -155,3 +155,7 @@ options/old/
 
 # SSC magazine (LaTeX manuscript + sim code)
 SSC-magazine/
+
+# magazine 仿真数据（code_magazine 下的运行输出）
+code_magazine/results/
+code_magazine/sim_run*.log
