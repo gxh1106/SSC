@@ -56,7 +56,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from im_channels import (FAIMChannel, SMChannel, OFDMIMChannel,
-                         FASISOChannel, SIMOChannel, OFDMQAMChannel,
+                         FASISOChannel, SIMOChannel, MIMOChannel, OFDMQAMChannel,
                          decide_robust_stream)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -94,14 +94,16 @@ SNR_LISTS = {
 
 
 def build_qam_channels():
-    """速率匹配的传统 QAM 基线（无索引调制，与 build_channels 一一对应）：
-    FA-SISO 64-QAM = 6 bpcu（对 FA-IM 2+4）；SIMO 256-QAM = 8 bpcu
-    （对 SM 2+6）；bit-loaded OFDM 10 bit/组（对 OFDM-IM 2+8）。"""
+    """速率匹配的传统（无索引调制）基线，与 build_channels 一一对应
+    （总发射能量与对应 IM 链路一致）：
+    FA-SISO 64-QAM = 6 bpcu（对 FA-IM 2+4）；
+    V-BLAST MIMO 全激活 QPSK = 8 bpcu（对 SM 2+6）；
+    bit-loaded OFDM [2,2,1,1] = 6 bit/组（对 OFDM-IM 2+4，QPSK）。"""
     return [
         FASISOChannel(Np=16, Nr=8, M=64, W=2.0, L_paths=10,
                       num_H=100, seed=10),
-        SIMOChannel(Nr=4, M=256, num_H=100, seed=11),
-        OFDMQAMChannel(n=4, bits_per_sc=(3, 3, 2, 2), seed=12),
+        MIMOChannel(Nt=4, Nr=4, M=4, num_H=100, seed=11),
+        OFDMQAMChannel(n=4, bits_per_sc=(2, 2, 1, 1), seed=12),
     ]
 
 
@@ -370,7 +372,7 @@ def main():
         curves = part_b_pretrained(channels, codec, snr_lists, args.trials,
                                    os.path.join(fig_dir, "fig_snr_psnr"),
                                    workers=args.workers,
-                                   qam_channels=build_qam_channels())
+                                   qam_channels=None)
 
     np.savez(os.path.join(res_dir, "sim_results.npz"),
              snr_lists={k: np.array(v) for k, v in snr_lists.items()},

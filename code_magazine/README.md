@@ -81,8 +81,6 @@ nohup ~/.workbuddy/venvs/ssc-sim/bin/python run_simulation.py \
 
 ### `results/sim_results.npz`（主仿真，对应论文 Fig. 3 / Fig. 4）
 
-额外键 `{name}_qam`：速率匹配的传统 QAM 基线（无 IM）平均 PSNR 曲线（Fig. 4 灰色曲线）。
-
 | 键 | 类型 | 内容 |
 |---|---|---|
 | `snr_lists` | dict[str → ndarray] | 每种 IM 的 SNR 采样点（FA-IM 0–20、SM 2–24、OFDM-IM 10–30，步长 2 dB） |
@@ -160,10 +158,7 @@ SNR 区间：FA-IM 0–20 dB，SM 2–24 dB，OFDM-IM 10–30 dB。
 | FA-IM 16 端口/4 激活, 16-QAM | 0–20 dB | 1.07 dB @ 0 dB（11/11 点为正，平滑递减） |
 
 高 SNR 处所有曲线饱和于编解码器的失真下限（约 27 dB）。
-传统 QAM 基线对比（Fig. 4 灰线，速率匹配、公共随机数）：SM 的 IM 链路无分割即领先
-SIMO 256-QAM 最多 2.4 dB（SeIM 后领先最多 3.6 dB）；FA-IM 与最优端口 SISO 64-QAM
-基本打平；OFDM-IM（16-QAM 配置）落后 bit-loaded 常规 OFDM 最多 1.5 dB——
-"IM 是否优于普通调制同样是配置相关、必须实测"，呼应论文主旨。
+备注（2026-09-06）：曾按审稿意见实现速率匹配的传统 QAM 基线（`SIMOChannel`/`MIMOChannel`/`FASISOChannel`/`OFDMQAMChannel` 仍保留在 im_channels.py 中备用），实测发现：SM 只在对比单天线密集星座（SIMO 256-QAM）时占优（+2.4 dB），对比同速率 V-BLAST MIMO（4×4 QPSK 联合 ML）反而落后约 2 dB；OFDM-IM 各配置与 bit-loaded OFDM 互有胜负且低 SNR 段鲁棒流方向交叉。经讨论后论文 Fig. 4 撤下 QAM 对比曲线，回归 SeIM vs 无分割双曲线版本。
 增益排序 SM > FA-IM > OFDM-IM 与瀑布区双流 BER 不对称强度排序一致（论文核心论据）。
 
 备注（配置选择过程）：FA-IM 3+4（Ns=8, 16-QAM）低 SNR 增益虽大（1.37 dB @ 0 dB），

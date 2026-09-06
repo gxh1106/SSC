@@ -290,7 +290,10 @@ class OFDMIMChannel(IMChannelBase):
         self.bits_per_index = int(math.log2(Ne))
         # 标准做法：仅使用 2^m1 个激活图案
         self.patterns = np.array(all_patterns[: 2 ** n_index_bits])      # (P,k)
-        self.constellation = gray_qam_constellation(M)
+        if M == 2:
+            self.constellation = np.array([-1.0 + 0j, 1.0 + 0j])       # BPSK
+        else:
+            self.constellation = gray_qam_constellation(M)
         # 预计算每组全部候选向量: P * M^k 个
         P = len(self.patterns)
         cand = np.zeros((P * M * M, n), dtype=np.complex128)
@@ -356,6 +359,73 @@ def rect_8qam_constellation():
         for j in range(2):
             const[i * 2 + j] = (2 * gray2[i] - 3) + 1j * (2 * j - 1)
     return const / np.sqrt(np.mean(np.abs(const) ** 2))
+
+
+class MIMOChannel:
+    """传统 MIMO（V-BLAST，对照 SM）：Nt 根发射天线全部激活、每根发独立
+    小星座符号，Nr 根接收，联合 ML 检测。每根天线功率 1/Nt（总发射能量
+    与 SM 的单激活天线一致）。Nt=4 + QPSK 时每时隙 8 bit，与
+    SM(Nt=4, 64-QAM) 的 2+6 bit 严格匹配。"""
+
+    name = "MIMO-QAM"
+
+    def __init__(self, Nt=4, Nr=4, M=4, num_H=100, Ne=16, seed=11):
+        assert math.log2(M).is_integer()
+        self.Nt, self.Nr, self.M = Nt, Nr, M
+        self.m_bits = int(math.log2(M)) * Nt      # 每时隙总比特
+        self.bits_per_index = int(math.log2(Ne))
+        self.num_H = num_H
+        rng = np.random.default_rng(seed)
+        self.H_pool = (rng.standard_normal((num_H, Nr, Nt))
+                       + 1j * rng.standard_normal((num_H, Nr, Nt))) / math.sqrt(2)
+        # 每根天线单位平均功率星座 / sqrt(Nt)（总能量归一）
+        if M == 2:
+            base = np.array([-1.0 + 0j, 1.0 + 0j])
+        else:
+            base = gray_qam_constellation(M)
+        self.constellation = base / math.sqrt(Nt)
+        # 全部 M^Nt 个候选发射向量与查找表
+        from itertools import product as _prod
+        grid = np.array(list(_prod(range(M), repeat=Nt)))          # (M^Nt, Nt)
+        self._grid = grid
+        all_x = self.constellation[grid]                           # (C, Nt)
+        self.lookup = np.stack([H @ all_x.T for H in self.H_pool])  # (num_H,Nr,C)
+
+    def transmit(self, indices, snr_db, mode="qam", rng=None):
+        rng = rng or np.random.default_rng()
+        indices = np.asarray(indices, dtype=np.int64)
+        L, Nq = indices.shape
+        bits = decimal_to_bits(indices.reshape(-1),
+                               self.bits_per_index).reshape(-1)
+        pad = (-len(bits)) % self.m_bits
+        if pad:
+            bits = np.concatenate([bits, np.zeros(pad, dtype=np.int64)])
+        per_ant = self.m_bits // self.Nt
+        sym_mat = bits_to_decimal(
+            bits.reshape(-1, self.Nt, per_ant))                    # (F, Nt)
+        # 候选索引 = 各天线符号的 M 进制展开
+        cand_idx = np.zeros(len(sym_mat), dtype=np.int64)
+        for a in range(self.Nt):
+            cand_idx = cand_idx * self.M + sym_mat[:, a]
+        iH = int(rng.integers(0, self.num_H))
+        table = self.lookup[iH]                                    # (Nr, C)
+        x = self.constellation[self._grid[cand_idx]]               # (F, Nt)
+        y = (self.H_pool[iH] @ x.T)                                # (Nr, F)
+        nv = 1.0 / (10.0 ** (snr_db / 10.0))
+        y = y + math.sqrt(nv / 2) * (rng.standard_normal(y.shape)
+                                     + 1j * rng.standard_normal(y.shape))
+        dec = ml_detect(y, table)                                  # (F,)
+        # 还原各天线符号
+        rem = dec
+        sym_hat = np.zeros((len(dec), self.Nt), dtype=np.int64)
+        for a in range(self.Nt - 1, -1, -1):
+            sym_hat[:, a] = rem % self.M
+            rem //= self.M
+        bits_hat = decimal_to_bits(sym_hat, per_ant).reshape(-1)
+        if pad:
+            bits_hat = bits_hat[:-pad]
+        return bits_to_decimal(
+            bits_hat.reshape(L, Nq, self.bits_per_index))
 
 
 class SIMOChannel:
@@ -443,9 +513,14 @@ class OFDMQAMChannel:
         self.bits_per_sc = list(bits_per_sc)
         self.m_bits = int(sum(bits_per_sc))
         self.bits_per_index = int(math.log2(Ne))
-        self.consts = [rect_8qam_constellation() if b == 3
-                       else gray_qam_constellation(2 ** b)
-                       for b in self.bits_per_sc]
+        self.consts = []
+        for b in self.bits_per_sc:
+            if b == 3:
+                self.consts.append(rect_8qam_constellation())
+            elif b == 1:
+                self.consts.append(np.array([-1.0 + 0j, 1.0 + 0j]))  # BPSK
+            else:
+                self.consts.append(gray_qam_constellation(2 ** b))
 
     def transmit(self, indices, snr_db, mode="qam", rng=None):
         rng = rng or np.random.default_rng()
