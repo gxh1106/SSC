@@ -344,6 +344,144 @@ class OFDMIMChannel(IMChannelBase):
         return ber_i, ber_s
 
 
+# ---------------------------------------------------------------------------
+# 传统（无索引调制）QAM 基线：与三种 IM 链路的每资源单元比特数(bpcu)严格匹配
+# ---------------------------------------------------------------------------
+def rect_8qam_constellation():
+    """4x2 矩形 8-QAM：I 路 4 电平（2 bit 格雷映射），Q 路 2 电平（1 bit），
+    单位平均功率。十进制索引 = i*2 + j（i: I 路, j: Q 路）。"""
+    gray2 = np.array([i ^ (i >> 1) for i in range(4)])
+    const = np.zeros(8, dtype=np.complex128)
+    for i in range(4):
+        for j in range(2):
+            const[i * 2 + j] = (2 * gray2[i] - 3) + 1j * (2 * j - 1)
+    return const / np.sqrt(np.mean(np.abs(const) ** 2))
+
+
+class SIMOChannel:
+    """传统 SIMO QAM（对照 SM）：固定单发射天线 + Nr 接收天线，CSIR 已知，
+    逐符号 ML 检测。无索引流、无流分割（均等保护）。
+    M=256 时每时隙 8 bit，与 SM(Nt=4, 64-QAM) 的 2+6 bit 严格匹配。"""
+
+    name = "SIMO-QAM"
+
+    def __init__(self, Nr=4, M=256, num_H=100, Ne=16, seed=11):
+        assert math.log2(M).is_integer()
+        self.Nr, self.M = Nr, M
+        self.m_bits = int(math.log2(M))
+        self.bits_per_index = int(math.log2(Ne))
+        self.num_H = num_H
+        rng = np.random.default_rng(seed)
+        self.h_pool = self._gen_pool(rng, num_H, Nr)              # (num_H,Nr,1)
+        self.constellation = gray_qam_constellation(M)
+        # (num_H, Nr, M) 无噪声接收查找表
+        self.lookup = self.h_pool * self.constellation[None, None, :]
+
+    @staticmethod
+    def _gen_pool(rng, num_H, Nr):
+        return (rng.standard_normal((num_H, Nr, 1))
+                + 1j * rng.standard_normal((num_H, Nr, 1))) / math.sqrt(2)
+
+    def transmit(self, indices, snr_db, mode="qam", rng=None):
+        rng = rng or np.random.default_rng()
+        indices = np.asarray(indices, dtype=np.int64)
+        L, Nq = indices.shape
+        bits = decimal_to_bits(indices.reshape(-1),
+                               self.bits_per_index).reshape(-1)
+        pad = (-len(bits)) % self.m_bits
+        if pad:
+            bits = np.concatenate([bits, np.zeros(pad, dtype=np.int64)])
+        sym = bits_to_decimal(bits.reshape(-1, self.m_bits))
+        iH = int(rng.integers(0, self.num_H))
+        table = self.lookup[iH]                                   # (Nr, M)
+        y = table[:, sym]                                         # (Nr, F)
+        nv = 1.0 / (10.0 ** (snr_db / 10.0))
+        y = y + math.sqrt(nv / 2) * (rng.standard_normal(y.shape)
+                                     + 1j * rng.standard_normal(y.shape))
+        dec = ml_detect(y, table)
+        bits_hat = decimal_to_bits(dec, self.m_bits).reshape(-1)
+        if pad:
+            bits_hat = bits_hat[:-pad]
+        return bits_to_decimal(
+            bits_hat.reshape(L, Nq, self.bits_per_index))
+
+
+class FASISOChannel(SIMOChannel):
+    """传统 FA-SISO QAM（对照 FA-IM）：毫米波几何信道 + 按 L2 范数选最优单端口
+    （对齐 ssc/faim.py 的 FA_SISO_Channel）。M=64 时每时隙 6 bit，
+    与 FA-IM(Ns=4, 16-QAM) 的 2+4 bit 严格匹配。"""
+
+    name = "FA-SISO-QAM"
+
+    def __init__(self, Np=16, Nr=8, M=64, W=2.0, L_paths=10,
+                 num_H=100, Ne=16, seed=10):
+        assert math.log2(M).is_integer()
+        self.Np, self.Nr, self.M = Np, Nr, M
+        self.m_bits = int(math.log2(M))
+        self.bits_per_index = int(math.log2(Ne))
+        self.num_H = num_H
+        rng = np.random.default_rng(seed)
+        H_pool = FAIMChannel._mmwave_channel(
+            rng, num_H, Nr, Np, W, L_paths)                    # (num_H,Nr,Np)
+        norms = np.linalg.vector_norm(H_pool, axis=1)        # (num_H,Np)
+        best = np.argmax(norms, axis=1)
+        self.h_pool = H_pool[np.arange(num_H), :, best][:, :, None]
+        self.constellation = gray_qam_constellation(M)
+        self.lookup = self.h_pool * self.constellation[None, None, :]
+
+
+class OFDMQAMChannel:
+    """常规 OFDM（对照 OFDM-IM）：每组 n=4 子载波全部激活，逐子载波独立
+    Rayleigh 衰落（CSIR 已知）+ 逐子载波 ML。默认 bit loading
+    [3,3,2,2]（8-QAM×2 + QPSK×2 = 10 bit/组），与 OFDM-IM(n=4,k=2,16-QAM)
+    的 2+8 bit/组严格匹配。"""
+
+    name = "OFDM-QAM"
+
+    def __init__(self, n=4, bits_per_sc=(3, 3, 2, 2), Ne=16, seed=12):
+        self.n = n
+        self.bits_per_sc = list(bits_per_sc)
+        self.m_bits = int(sum(bits_per_sc))
+        self.bits_per_index = int(math.log2(Ne))
+        self.consts = [rect_8qam_constellation() if b == 3
+                       else gray_qam_constellation(2 ** b)
+                       for b in self.bits_per_sc]
+
+    def transmit(self, indices, snr_db, mode="qam", rng=None):
+        rng = rng or np.random.default_rng()
+        indices = np.asarray(indices, dtype=np.int64)
+        L, Nq = indices.shape
+        bits = decimal_to_bits(indices.reshape(-1),
+                               self.bits_per_index).reshape(-1)
+        pad = (-len(bits)) % self.m_bits
+        if pad:
+            bits = np.concatenate([bits, np.zeros(pad, dtype=np.int64)])
+        gb = bits.reshape(-1, self.m_bits)                        # (G, m_bits)
+        G = len(gb)
+        # 按 bit loading 切分并调制
+        x = np.zeros((G, self.n), dtype=np.complex128)
+        col = 0
+        for j, (b, c) in enumerate(zip(self.bits_per_sc, self.consts)):
+            x[:, j] = c[bits_to_decimal(gb[:, col:col + b])]
+            col += b
+        h = (rng.standard_normal((G, self.n))
+             + 1j * rng.standard_normal((G, self.n))) / math.sqrt(2)
+        nv = 1.0 / (10.0 ** (snr_db / 10.0))
+        y = h * x + math.sqrt(nv / 2) * (
+            rng.standard_normal((G, self.n))
+            + 1j * rng.standard_normal((G, self.n)))
+        # 逐子载波 ML
+        dec_bits = []
+        for j, (b, c) in enumerate(zip(self.bits_per_sc, self.consts)):
+            d = np.abs(y[:, j, None] - h[:, j, None] * c[None, :]) ** 2
+            dec_bits.append(decimal_to_bits(d.argmin(1), b))
+        bits_hat = np.concatenate(dec_bits, axis=1).reshape(-1)
+        if pad:
+            bits_hat = bits_hat[:-pad]
+        return bits_to_decimal(
+            bits_hat.reshape(L, Nq, self.bits_per_index))
+
+
 def decide_robust_stream(channel, snr_list, n_slots=20000, seed=123):
     """对给定信道在整个工作 SNR 区间统计双流误比特率，
     返回 (index_more_robust, ber_i_list, ber_s_list)。

@@ -55,7 +55,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from im_channels import FAIMChannel, SMChannel, OFDMIMChannel, decide_robust_stream
+from im_channels import (FAIMChannel, SMChannel, OFDMIMChannel,
+                         FASISOChannel, SIMOChannel, OFDMQAMChannel,
+                         decide_robust_stream)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SSC_ROOT = os.path.normpath(os.path.join(HERE, ".."))
@@ -89,6 +91,18 @@ SNR_LISTS = {
     "SM": list(range(2, 26, 2)),
     "OFDM-IM": list(range(10, 32, 2)),
 }
+
+
+def build_qam_channels():
+    """速率匹配的传统 QAM 基线（无索引调制，与 build_channels 一一对应）：
+    FA-SISO 64-QAM = 6 bpcu（对 FA-IM 2+4）；SIMO 256-QAM = 8 bpcu
+    （对 SM 2+6）；bit-loaded OFDM 10 bit/组（对 OFDM-IM 2+8）。"""
+    return [
+        FASISOChannel(Np=16, Nr=8, M=64, W=2.0, L_paths=10,
+                      num_H=100, seed=10),
+        SIMOChannel(Nr=4, M=256, num_H=100, seed=11),
+        OFDMQAMChannel(n=4, bits_per_sc=(3, 3, 2, 2), seed=12),
+    ]
 
 
 def part_a_ber_asymmetry(channels, snr_lists, n_slots, out_prefix,
@@ -174,7 +188,7 @@ def _tx_worker(task):
 
 
 def part_b_pretrained(channels, codec, snr_lists, n_trials, out_prefix,
-                      workers=48):
+                      workers=48, qam_channels=None):
     """端到端重建 PSNR vs SNR（真实图像 + 预训练 SwinSSC）：SeIM vs w/o SS。
 
     流程与官方 ssc/inference.py 对齐：先用 given_SNR=snr 编码得到 RQ 索引
@@ -193,19 +207,17 @@ def part_b_pretrained(channels, codec, snr_lists, n_trials, out_prefix,
     cache = codec.encode_all(snr=ref_snr)         # SNR 无关时仅编码一次
     all_indices = [rec["indices"] for rec in cache]
     n_img = len(cache)
-    curves = {}
-    for ch in channels:
-        snr_list = snr_lists[ch.name]
-        t0 = time.time()
-        # seim/eep 使用相同种子 -> 同一信道实现与噪声 -> 配对比较
-        # 种子不含 SNR 项（公共随机数）：同一 (图像, trial, 模式) 在所有
-        # SNR 点上共享同一信道实现与噪声序列，PSNR 曲线随 SNR 光滑变化
+
+    def eval_channel(ch, snr_list, modes):
+        """对单条链路评估若干模式的 PSNR 曲线。所有模式共用相同种子
+        （公共随机数）：同一 (图像, trial) 在所有 SNR 点、所有模式下
+        共享同一信道实现与噪声 -> 严格配对且曲线光滑。"""
         tasks = [(snr, ii, t, mode,
                   (ii * 1000 + t * 10) & 0x7fffffff)
                  for si, snr in enumerate(snr_list)
                  for ii in range(n_img)
                  for t in range(n_trials)
-                 for mode in ("seim", "eep")]
+                 for mode in modes]
         results = {}
         with cf.ProcessPoolExecutor(
                 max_workers=workers,
@@ -217,28 +229,39 @@ def part_b_pretrained(channels, codec, snr_lists, n_trials, out_prefix,
                 results[(snr, ii, t, mode)] = idx_hat
                 if (done + 1) % 500 == 0:
                     print(f"  {ch.name:>9s} 传输进度 {done + 1}/{len(tasks)}")
-        # 按 (snr, img) 分组批量解码（batch = n_trials * 2）
-        psnr_seim = np.zeros(len(snr_list))
-        psnr_eep = np.zeros(len(snr_list))
+        out = {m: np.zeros(len(snr_list)) for m in modes}
         for si, snr in enumerate(snr_list):
-            acc = {"seim": [], "eep": []}
+            acc = {m: [] for m in modes}
             for ii in range(n_img):
                 rec = cache[ii]
-                batch_idx, modes = [], []
+                batch_idx, mds = [], []
                 for t in range(n_trials):
-                    for mode in ("seim", "eep"):
+                    for mode in modes:
                         batch_idx.append(results[(snr, ii, t, mode)])
-                        modes.append(mode)
+                        mds.append(mode)
                 recons = codec.decode_many(batch_idx, ref=rec, snr=snr)
-                for mode, recon in zip(modes, recons):
+                for mode, recon in zip(mds, recons):
                     acc[mode].append(codec.psnr(rec["gt"], recon))
-            psnr_seim[si] = float(np.mean(acc["seim"]))
-            psnr_eep[si] = float(np.mean(acc["eep"]))
-            print(f"  {ch.name:>9s} SNR={snr:>2d} dB: "
-                  f"SeIM {psnr_seim[si]:.3f} dB / "
-                  f"w/o SS {psnr_eep[si]:.3f} dB")
-        curves[ch.name] = dict(seim=psnr_seim, eep=psnr_eep)
+            for m in modes:
+                out[m][si] = float(np.mean(acc[m]))
+            msg = " / ".join(f"{m} {out[m][si]:.3f}" for m in modes)
+            print(f"  {ch.name:>9s} SNR={snr:>2d} dB: {msg} dB")
+        return out
+
+    curves = {}
+    for ch in channels:
+        t0 = time.time()
+        curves[ch.name] = eval_channel(ch, snr_lists[ch.name],
+                                       ("seim", "eep"))
         print(f"  {ch.name:>9s} 完成，用时 {time.time() - t0:.0f}s")
+
+    # 速率匹配的传统 QAM 基线（无索引调制，均等保护）
+    if qam_channels:
+        for ch, qch in zip(channels, qam_channels):
+            t0 = time.time()
+            qcurves = eval_channel(qch, snr_lists[ch.name], ("qam",))
+            curves[ch.name]["qam"] = qcurves["qam"]
+            print(f"  {qch.name:>9s} 完成，用时 {time.time() - t0:.0f}s")
 
     _plot_psnr_curves(channels, curves, snr_lists, out_prefix)
     return curves
@@ -252,12 +275,16 @@ def _plot_psnr_curves(channels, curves, snr_lists, out_prefix):
         ax.plot(snr_list, c["seim"], "o-", color="#C00000", lw=1.2, ms=4,
                 label="SeIM (proposed)")
         ax.plot(snr_list, c["eep"], "s--", color="#2E8B57", lw=1.2, ms=4,
-                label="w/o stream splitting")
+                label="w/o SeIM (equal split)")
+        if "qam" in c:
+            ax.plot(snr_list, c["qam"], "^:", color="#7F7F7F", lw=1.2,
+                    ms=4, label="w/o IM (conventional QAM)")
         ax.set_xlabel("SNR (dB)")
         ax.set_title(ch.name, fontsize=9)
+        ax.set_xticks(snr_list[::2])
         ax.grid(True, which="both", ls=":", lw=0.5, alpha=0.6)
     axes[0].set_ylabel("Reconstruction PSNR (dB)")
-    axes[0].legend(loc="lower right", fontsize=8)
+    axes[0].legend(loc="lower right", fontsize=7)
     fig.tight_layout()
     for ext in ("pdf", "png"):
         fig.savefig(f"{out_prefix}.{ext}", dpi=300)
@@ -342,13 +369,16 @@ def main():
               f"Nq={codec.Nq}, device={codec.device})")
         curves = part_b_pretrained(channels, codec, snr_lists, args.trials,
                                    os.path.join(fig_dir, "fig_snr_psnr"),
-                                   workers=args.workers)
+                                   workers=args.workers,
+                                   qam_channels=build_qam_channels())
 
     np.savez(os.path.join(res_dir, "sim_results.npz"),
              snr_lists={k: np.array(v) for k, v in snr_lists.items()},
              ber={k: np.array(v) for k, v in ber.items()},
              **{f"{k}_seim": v["seim"] for k, v in curves.items()},
-             **{f"{k}_eep": v["eep"] for k, v in curves.items()})
+             **{f"{k}_eep": v["eep"] for k, v in curves.items()},
+             **{f"{k}_qam": v["qam"] for k, v in curves.items()
+                if "qam" in v})
     print(f"原始数据已保存到 {os.path.join(res_dir, 'sim_results.npz')}")
 
     # 汇总关键结论（终端打印，便于写论文时引用数字）

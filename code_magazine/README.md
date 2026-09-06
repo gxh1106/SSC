@@ -13,6 +13,7 @@
 | `im_channels.py` | 三种 IM 物理层链路（FA-IM / SM / OFDM-IM）的纯 NumPy Monte Carlo 仿真，统一接口 `transmit(indices, snr_db, mode)`；`mode='seim'` 为语义感知流分割，`mode='eep'` 为无分割基线。已与 torch 版 `ssc/faim.py: FA_IM_Channel` 核对（Ns=4/Np=16/Nr=8/64-QAM/W=2/L=10 与 `ssc/inference.py` 一致） |
 | `semantic_codec.py` | 语义编解码器接口：`SyntheticRQCodec`（合成高斯信源 + Lloyd-RQ，无需 GPU）与 `PretrainedSwinSSCCodec`（**已修正的**预训练权重钩子） |
 | `run_simulation.py` | 主脚本：产出 `fig_ber_asymmetry.pdf`（双流 BER 不对称）与 `fig_snr_psnr.pdf`（SeIM vs w/o SS 的 PSNR-SNR 曲线），支持合成信源与预训练权重两种模式；`build_channels()` 定义论文采用的三种 IM 配置，`SNR_LISTS` 定义各自工作区间 |
+| `im_channels.py` 中的 QAM 基线 | `SIMOChannel`（Nr=4, 256-QAM，对 SM 的 8 bpcu）、`FASISOChannel`（16 端口选最优单端口，64-QAM，对 FA-IM 的 6 bpcu，对齐 `ssc/faim.py: FA_SISO_Channel`）、`OFDM_QAMChannel`（bit loading [3,3,2,2]：8-QAM×2+QPSK×2，对 OFDM-IM 的 10 bit/组）。接口与 IM 信道兼容：`transmit(indices, snr_db, mode='qam', rng)`，均等保护无分割。Fig. 4 第三曲线 |
 | `run_config_sweep.py` | 索引/符号比特搭配扫描：对同一 IM 家族换用不同 (m1, m2) 组合，profiling 鲁棒流方向并测端到端 SeIM 增益，产出 `results/config_sweep.npz` 与 `results/fig_config_sweep.pdf`；用于验证"分配方向由配置决定、增益跟踪不对称强度" |
 | `results/` | 仿真原始数据 `sim_results.npz`（已加入 .gitignore） |
 
@@ -79,6 +80,8 @@ nohup ~/.workbuddy/venvs/ssc-sim/bin/python run_simulation.py \
 `results/`（已 gitignore），读取需 `allow_pickle=True`（含 dict 条目）：
 
 ### `results/sim_results.npz`（主仿真，对应论文 Fig. 3 / Fig. 4）
+
+额外键 `{name}_qam`：速率匹配的传统 QAM 基线（无 IM）平均 PSNR 曲线（Fig. 4 灰色曲线）。
 
 | 键 | 类型 | 内容 |
 |---|---|---|
@@ -157,6 +160,10 @@ SNR 区间：FA-IM 0–20 dB，SM 2–24 dB，OFDM-IM 10–30 dB。
 | FA-IM 16 端口/4 激活, 16-QAM | 0–20 dB | 1.07 dB @ 0 dB（11/11 点为正，平滑递减） |
 
 高 SNR 处所有曲线饱和于编解码器的失真下限（约 27 dB）。
+传统 QAM 基线对比（Fig. 4 灰线，速率匹配、公共随机数）：SM 的 IM 链路无分割即领先
+SIMO 256-QAM 最多 2.4 dB（SeIM 后领先最多 3.6 dB）；FA-IM 与最优端口 SISO 64-QAM
+基本打平；OFDM-IM（16-QAM 配置）落后 bit-loaded 常规 OFDM 最多 1.5 dB——
+"IM 是否优于普通调制同样是配置相关、必须实测"，呼应论文主旨。
 增益排序 SM > FA-IM > OFDM-IM 与瀑布区双流 BER 不对称强度排序一致（论文核心论据）。
 
 备注（配置选择过程）：FA-IM 3+4（Ns=8, 16-QAM）低 SNR 增益虽大（1.37 dB @ 0 dB），
